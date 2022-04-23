@@ -312,6 +312,11 @@ async def cleanup():
   await c.client.disconnect()
   print("OK!")
 
+@app.before_request
+async def conn_check():
+  if not c.client.is_connected():
+    print("Not connected, reconnecting...")
+    await startup()
 
 # #################### Init
 async def main():
