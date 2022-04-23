@@ -1,11 +1,12 @@
 from datetime import datetime
 from quart import Quart, Response, render_template
 import hypercorn.asyncio
+import asyncio
 from telethon import TelegramClient
-from telethon import utils
-from telethon.tl.functions.channels import GetFullChannelRequest
-from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import InputPeerChannel, InputPeerUser
+from telethon._misc import utils
+from telethon._tl.fn.channels import GetFullChannel
+from telethon._tl.fn.users import GetFullUser
+from telethon._tl import InputPeerChannel, InputPeerUser
 from config import api_id, api_hash, user
 
 app = Quart(__name__)
@@ -186,11 +187,11 @@ async def retr_rss(peer, offset=0):
 
   input_peer = await c.client.get_input_entity(peer)
   if type(input_peer) == InputPeerChannel:
-    peer_info = await c.client(GetFullChannelRequest(input_peer))
+    peer_info = await c.client(GetFullChannel(input_peer))
     info = peer_info.full_chat.about
     peer_info = peer_info.chats[0]
   elif type(input_peer) == InputPeerUser:
-    peer_info = await c.client(GetFullUserRequest(input_peer))
+    peer_info = await c.client(GetFullUser(input_peer))
     info = peer_info.about
     peer_info = peer_info.user
   else:
@@ -324,7 +325,6 @@ async def main():
   config.bind = ["localhost:9504"]
   await hypercorn.asyncio.serve(app, config)
 
-
 c = MadMachine(user, api_id, api_hash)
 if __name__ == '__main__':
-  c.client.loop.run_until_complete(main())
+  asyncio.run(main())
