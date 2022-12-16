@@ -1,5 +1,5 @@
 from datetime import datetime
-from quart import Quart, Response, render_template
+from quart import Quart, Response, render_template, request, abort
 import hypercorn.asyncio
 from telethon import TelegramClient
 from telethon import utils
@@ -174,7 +174,13 @@ async def retr_rss_user(user, offset=0):
 @app.route('/rss/i/<int:peer>')
 @app.route('/rss/i/<int:peer>/<int:offset>')
 async def retr_rss(peer, offset=0):
+  # Abort shortly on HEAD request to save time
+  if request.method == 'HEAD':
+    return "OK"
   msgs = await c.client.get_messages(peer, limit=25, add_offset=offset)
+
+  if not msgs:
+    abort(400)
 
   # Fetch 10 more messages if last message fetched is part of a group
   if msgs[-1].grouped_id:
@@ -245,10 +251,10 @@ async def retr_media(peer, msg, size=None):
   m = await c.client.get_messages(peer, ids=msg)
 
   if not m:
-    return(f'Unable to fetch message {msg} from {peer}')
+    return(f'Unable to fetch message {msg} from {peer}', 404)
 
   if not m.media:
-    return(f'Unable to fetch media from {m}')
+    return(f'Unable to fetch media from {m}', 400)
 
   mime_type = 'application/octet-stream'
   name = f'{peer}_{msg}.bin'
@@ -264,7 +270,7 @@ async def retr_media(peer, msg, size=None):
     mime_type = 'image/jpeg'
     name = f'{peer}_{msg}.jpg'
   else:
-    return(f'Unknown media type {m.media}')
+    return(f'Unknown media type {m.media}', 400)
 
   if size is not None:
     size = int(size)
