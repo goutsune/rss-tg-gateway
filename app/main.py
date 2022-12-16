@@ -5,7 +5,11 @@ from telethon import TelegramClient
 from telethon import utils
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.users import GetFullUserRequest
-from telethon.tl.types import InputPeerChannel, InputPeerUser
+from telethon.tl.types import InputPeerChannel, \
+                                InputPeerUser, \
+                                MessageService, \
+                                MessageActionPinMessage
+from telethon.errors.rpcerrorlist import ChannelPrivateError
 from config import api_id, api_hash, user
 
 app = Quart(__name__)
@@ -18,7 +22,10 @@ class MadMachine:
 
     self.client = TelegramClient(user, api_id, api_hash)
     self.client.parse_mode = 'html'
+    # Cache for resolving peers
     self.users = {}
+    # Cache for author names when retrieving channel messages
+    self.author_names = {}
 
   def get_filename(self, attributes):
 
@@ -27,37 +34,53 @@ class MadMachine:
         return attribute.file_name
 
   async def resolve_peer(self, peer):
-    if hasattr(peer, 'user_id'):
-      uid = peer.user_id
-      if uid not in self.users:
-        entity = await self.client.get_entity(peer)
-        if entity.last_name:
-          if entity.username:
-            self.users[uid] = f'{entity.first_name} {entity.last_name} ({entity.username})'
-          else:
-            self.users[uid] = f'{entity.first_name} {entity.last_name}'
-        elif entity.first_name:
-          if entity.username:
-            self.users[uid] = f'{entity.first_name} ({entity.username})'
-          else:
-            self.users[uid] = f'{entity.first_name}'
+    ''' A helper funtion to avoid re-requesting user names when
+    resolving them from peer identifier objects. Currently it just
+    stores rendered name never updating it, which might be a problem.
+    '''
+    try:
+      # This processes normal users, preserving their usernames along
+      # with full name if possible
+      if hasattr(peer, 'user_id'):
+        uid = peer.user_id
+        if uid not in self.users:
+          entity = await self.client.get_entity(peer)
+          if entity.last_name:
+            if entity.username:
+              self.users[uid] = f'{entity.first_name} '\
+                                f'{entity.last_name} ({entity.username})'
+            else:
+              self.users[uid] = f'{entity.first_name} {entity.last_name}'
+          elif entity.first_name:
+            if entity.username:
+              self.users[uid] = f'{entity.first_name} ({entity.username})'
+            else:
+              self.users[uid] = f'{entity.first_name}'
 
-    if hasattr(peer, 'channel_id'):
-      uid = peer.channel_id
-      channel = await self.client.get_entity(peer)
-      return f'{channel.title}'
+      # This gets channel names
+      if hasattr(peer, 'channel_id'):
+        uid = peer.channel_id
+        if uid not in self.users:
+          channel = await self.client.get_entity(peer)
+          # TODO: confirm ID pool is shared betweeen channels and users
+          self.users[uid] = channel.title
+
+    except ChannelPrivateError:
+      return False
 
     return self.users[uid]
 
   async def get_name_from_msg(self, message):
 
+    # Post attibute makes this is a channel message, let's add more info
     if message.post:
-      channel = await self.client.get_entity(message.peer_id)
+      channel = await self.resolve_peer(message.peer_id)
       if message.post_author:
-        return f'{channel.title} ({message.post_author})'
+        return f'{channel} ({message.post_author})'
       else:
-        return f'{channel.title}'
+        return f'{channel}'
 
+    # Otherwise it is a normal message from a chat
     elif message.from_id:
       return await self.resolve_peer(message.from_id)
 
@@ -90,7 +113,9 @@ class MadMachine:
       msg['link'] = f'https://t.me/c/{peer_info.id}/{m.id}'
 
     # Actual post text
-    msg['text'] += f'<p style="white-space: pre-line">{m.text}</p>'
+    if m.text:
+      msg['text'] += f'<p style="white-space: pre-line">{m.text}</p>'
+
     # ################### Processing attachments
     # =================== Photo
     if (m.photo and not m.web_preview) or m.sticker:
@@ -118,8 +143,10 @@ class MadMachine:
         '</video>'
     # =================== Link
     if m.web_preview:
+      preview_author = \
+        f'({m.web_preview.author})' if m.web_preview.author else ''
       msg['text'] += '<blockquote>' \
-      f'<p><b>{m.web_preview.site_name}</b> ({m.web_preview.author})<br/>' \
+      f'<p><b>{m.web_preview.site_name}</b> {preview_author}<br/>' \
       f'{m.web_preview.title}<br/>' \
       f'{m.web_preview.description}</p>'
       if  m.web_preview.photo:
@@ -139,22 +166,48 @@ class MadMachine:
     # =================== Forwarded message
     # Forwarded message should blockquote all of above
     if m.fwd_from:
+      # We have a peer to read from
       if m.fwd_from.from_id:
+        # Try resolving that peer id and make a link
         name = await c.resolve_peer(m.fwd_from.from_id)
-        user = await c.client.get_entity(m.fwd_from.from_id)
-        user = user.username
-        post = m.fwd_from.channel_post
-        if post:
-          name = f'<a href="https://t.me/{user}/{post}">{name}</a>'
+        if name != False:
+          user = await c.client.get_entity(m.fwd_from.from_id)
+          user = user.username
+          post = m.fwd_from.channel_post
+          if post:
+            name = f'<a href="https://t.me/{user}/{post}">{name}</a>'
+          else:
+            name = f'<a href="https://t.me/{user}">{name}</a>'
+
+
+        elif m.fwd_from.from_name:
+            # We got ChannelPrivate exception, let's note that
+            name = f'{m.fwd_from.from_name} (Private channel)'
         else:
-          name = f'<a href="https://t.me/{user}">{name}</a>'
+            # Can this happen?
+            name = f'Private channel'
+
       elif m.fwd_from.from_name:
+        # No peer, but we have simple name to insert e.g. channel signs
         name = m.fwd_from.from_name
       else:
+        # Can this happen?
         name = "??????"
       msg['text'] = f"<p>Forwarded from {name}:</p>"\
                     f"<blockquote>{msg['text']}</blockquote>"
 
+    # =================== Service Messages
+    if type(m) == MessageService:
+      # ================= Message Pin
+      if (type(m.action)) == MessageActionPinMessage:
+        if peer_info.username:
+          msg['text'] += f'<p>{msg["author"]} pinned '\
+                         f'<a href="https://t.me/{peer_info.username}/'\
+                         f'{m.reply_to_msg_id}">a message</a>.</p>'
+        else:
+          msg['text'] += f'<p>{msg["author"]} pinned '\
+                         f'<a href="https://t.me/c/{peer_info.id}/'\
+                         f'{m.reply_to_msg_id}">a message</a>.</p>'
     return msg
 
 
@@ -162,11 +215,18 @@ class MadMachine:
 @app.route('/rss/<user>')
 @app.route('/rss/<user>/<int:offset>')
 async def retr_rss_user(user, offset=0):
-  peer = await c.client.get_input_entity(user)
-  if hasattr(peer, 'channel_id'):
-    peer = peer.channel_id
-  elif hasattr(peer, 'user_id'):
-    peer = peer.user_id
+  try:
+    peer = await c.client.get_input_entity(user)
+  except ValueError:
+    return f'Unknown user {user}', 404
+
+  try:
+    if hasattr(peer, 'channel_id'):
+      peer = peer.channel_id
+    elif hasattr(peer, 'user_id'):
+      peer = peer.user_id
+  except ChannelPrivateError:
+    return 'Private channel, sorry!', 403
 
   return await retr_rss(user, offset)
 
@@ -179,9 +239,12 @@ async def retr_rss(peer, offset=0):
     return "OK"
 
   limit = int(request.args.get('limit', '25'))
-  msgs = await c.client.get_messages(peer,
-                                     limit=limit,
-                                     add_offset=offset)
+  try:
+    msgs = await c.client.get_messages(peer,
+                                       limit=limit,
+                                       add_offset=offset)
+  except ChannelPrivateError:
+    return 'Private channel, sorry!', 403
 
   if not msgs:
     abort(400)
