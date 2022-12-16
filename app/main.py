@@ -177,7 +177,11 @@ async def retr_rss(peer, offset=0):
   # Abort shortly on HEAD request to save time
   if request.method == 'HEAD':
     return "OK"
-  msgs = await c.client.get_messages(peer, limit=25, add_offset=offset)
+
+  limit = int(request.args.get('limit', '25'))
+  msgs = await c.client.get_messages(peer,
+                                     limit=limit,
+                                     add_offset=offset)
 
   if not msgs:
     abort(400)
