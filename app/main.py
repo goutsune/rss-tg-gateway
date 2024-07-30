@@ -8,7 +8,9 @@ from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.types import InputPeerChannel, \
                                 InputPeerUser, \
                                 MessageService, \
-                                MessageActionPinMessage
+                                MessageActionPinMessage, \
+                                MessageActionChatEditPhoto, \
+                                MessageActionChannelCreate
 from telethon.errors.rpcerrorlist import ChannelPrivateError
 from config import api_id, api_hash, user
 
@@ -215,6 +217,15 @@ class MadMachine:
           msg['text'] += f'<p>{msg["author"]} pinned '\
                          f'<a href="https://t.me/c/{peer_info.id}/'\
                          f'{m.reply_to_msg_id}">a message</a>.</p>'
+        msg['title'] = f'{msg["author"]} pinned a message'
+      # ================= Channel photo edit
+      if (type(m.action)) == MessageActionChatEditPhoto:
+        msg['text'] += f'<p>Channel photo updated.</p>'
+        msg['title'] = 'Channel photo updated'
+      # ================= Channel created
+      if (type(m.action)) == MessageActionChannelCreate:
+        msg['text'] += f'<p>Channel created.</p>'
+        msg['title'] = 'Channel created'
     return msg
 
 
@@ -271,8 +282,8 @@ async def retr_rss(peer, offset=0):
     peer_info = peer_info.chats[0]
   elif type(input_peer) == InputPeerUser:
     peer_info = await c.client(GetFullUserRequest(input_peer))
-    info = peer_info.about
-    peer_info = peer_info.user
+    info = peer_info.full_user.about
+    peer_info = peer_info.users[0]
   else:
     peer_info = await c.client.get_entity(peer)
     info = ''
@@ -327,7 +338,7 @@ async def retr_media(peer, msg, size=None):
   if not m:
     return(f'Unable to fetch message {msg} from {peer}', 404)
 
-  if not m.media:
+  if not m.media and not m.action:
     return(f'Unable to fetch media from {m}', 400)
 
   if type(peer) != str:
@@ -342,6 +353,10 @@ async def retr_media(peer, msg, size=None):
     for attribute in m.document.attributes:
       if hasattr(attribute, 'file_name'):
         name = attribute.file_name
+  elif m.action and hasattr(m.action, 'photo'):
+    source = m.action.photo
+    mime_type = 'image/jpeg'
+    name = f'{peer}_{msg}.jpg'
   elif m.photo:
     source = m.photo
     mime_type = 'image/jpeg'
