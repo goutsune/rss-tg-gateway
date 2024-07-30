@@ -374,9 +374,9 @@ async def retr_media(peer, msg, size=None):
   if size is not None:
     size = int(size)
     return await m.download_media(file=bytes, thumb=size), {
-       'Content-Type': mime_type,
-       'Cache-Control': 'no-cache',
-       'Content-Disposition': f'inline; filename={name}'}
+     'Content-Type': mime_type,
+     'Cache-Control': 'no-cache',
+     'Content-Disposition': f'inline; filename={name}'}
 
   send_media = (
     i async for i in
@@ -395,11 +395,13 @@ async def retr_media(peer, msg, size=None):
 @app.route('/profile/<peer>/icon.jpg')
 @app.route('/profile/<peer>/favicon.ico')
 async def retr_avatar(peer):
+
   input_peer = await c.client.get_input_entity(peer)
+
   return await c.client.download_profile_photo(input_peer, file=bytes), {
-        'Content-Type': 'image/jpeg',
-        'Cache-Control': 'no-cache',
-        'Content-Disposition': f'inline; filename={peer}'}
+    'Content-Type': 'image/jpeg',
+    'Cache-Control': 'no-cache',
+    'Content-Disposition': f'inline; filename={peer}'}
 
 
 @app.before_serving
