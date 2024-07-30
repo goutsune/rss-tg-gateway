@@ -88,10 +88,11 @@ class MadMachine:
       return 'FIXME (unknown message type)'
 
   async def render_msg(self, peer_info, m):
+    private = True  # Switch to generate private URLs instead of public ones
+
     if peer_info.username:
       peer = peer_info.username
-    elif peer_info.title:
-      peer = peer_info.title
+      private = False
     else:
       peer = peer_info.id
     msg = {}
@@ -107,10 +108,13 @@ class MadMachine:
       msg['title'] = m.date.strftime(r'%d %b %Y %H:%M:%S')
     msg['author'] = await c.get_name_from_msg(m)
     msg['guid'] = f'{peer_info.id}/{m.id}'
-    if peer_info.username:
-      msg['link'] = f'https://t.me/{peer_info.username}/{m.id}'
-    else:
+
+    if private:
       msg['link'] = f'https://t.me/c/{peer_info.id}/{m.id}'
+      media_base = f'{host}/media/i'
+    else:
+      msg['link'] = f'https://t.me/{peer_info.username}/{m.id}'
+      media_base = f'{host}/media'
 
     # Actual post text
     if m.text:
@@ -119,7 +123,10 @@ class MadMachine:
     # ################### Processing attachments
     # =================== Photo
     if (m.photo and not m.web_preview) or m.sticker:
-      msg['text'] += f'<img src="{host}/media/{peer}/{m.id}" />'
+      if private:
+        msg['text'] += f'<img src="{media_base}/{peer}/{m.id}" />'
+      else:
+        msg['text'] += f'<img src="{media_base}/{peer}/{m.id}" />'
 
     # =================== Video/GIF
     if m.gif:
@@ -128,8 +135,8 @@ class MadMachine:
       # h = m.gif.attributes[0].h
 
       msg['text'] += \
-        f'<video width="{w}" height="auto" poster="{host}/media/{peer}/{m.id}/1" loop autoplay>'\
-        f'<source src="{host}/media/{peer}/{m.id}" type="{mime}" />'\
+        f'<video width="{w}" height="auto" poster="{media_base}/{peer}/{m.id}/1" loop autoplay>'\
+        f'<source src="{media_base}/{peer}/{m.id}" type="{mime}" />'\
         '</video>'
     # =================== Video/moov
     if m.video:
@@ -138,8 +145,8 @@ class MadMachine:
       # h = min(m.video.attributes[0].h, 640)
 
       msg['text'] += \
-        f'<video width="{w}" height="auto" poster="{host}/media/{peer}/{m.id}/1" controls=1>'\
-        f'<source src="{host}/media/{peer}/{m.id}" type="{mime}" />'\
+        f'<video width="{w}" height="auto" poster="{media_base}/{peer}/{m.id}/1" controls=1>'\
+        f'<source src="{media_base}/{peer}/{m.id}" type="{mime}" />'\
         '</video>'
     # =================== Link
     if m.web_preview:
@@ -150,18 +157,18 @@ class MadMachine:
       f'{m.web_preview.title}<br/>' \
       f'{m.web_preview.description}</p>'
       if  m.web_preview.photo:
-        msg['text'] += f'<br/><img src="{host}/media/{peer}/{m.id}" /></blockquote>'
+        msg['text'] += f'<br/><img src="{media_base}/{peer}/{m.id}" /></blockquote>'
       else:
         msg['text'] += '</blockquote>'
     # =================== Octet-stream
     if m.document:
       # Try to show as image anything that matches image mime-type
       if 'image/' in m.document.mime_type:
-        msg['text'] += f'<img src="{host}/media/{peer}/{m.id}" />'
+        msg['text'] += f'<img src="{media_base}/{peer}/{m.id}" />'
       # Otherwise show <a> link with title for now.
       else:
         name = c.get_filename(m.document.attributes)
-        msg['text'] += f'<p><a href="{host}/media/{peer}/{m.id}">{name}</a><p>'
+        msg['text'] += f'<p><a href="{media_base}/{peer}/{m.id}">{name}</a><p>'
 
     # =================== Forwarded message
     # Forwarded message should blockquote all of above
@@ -322,6 +329,9 @@ async def retr_media(peer, msg, size=None):
 
   if not m.media:
     return(f'Unable to fetch media from {m}', 400)
+
+  if type(peer) != str:
+    peer = peer.access_hash
 
   mime_type = 'application/octet-stream'
   name = f'{peer}_{msg}.bin'
