@@ -155,7 +155,7 @@ class MadMachine:
       preview_author = \
         f'({m.web_preview.author})' if m.web_preview.author else ''
       msg['text'] += '<blockquote>' \
-      f'<p><b>{m.web_preview.site_name}</b> {preview_author}<br/>' \
+      f'<p style="white-space: pre-line"><b>{m.web_preview.site_name}</b> {preview_author}<br/>' \
       f'{m.web_preview.title}<br/>' \
       f'{m.web_preview.description}</p>'
       if  m.web_preview.photo:
