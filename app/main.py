@@ -330,6 +330,13 @@ async def retr_rss(peer, offset=0):
 async def retr_404():
   return 'Error', 404
 
+
+@app.route('/media/i/<int:peer_id>/<int:msg>/<size>')
+@app.route('/media/i/<int:peer_id>/<int:msg>')
+async def resolve_peer_with_media(peer_id, msg, size=None):
+  input_peer = await c.client.get_input_entity(peer_id)
+  return await retr_media(input_peer, msg, size)
+
 @app.route('/media/<peer>/<int:msg>/<size>')
 @app.route('/media/<peer>/<int:msg>')
 async def retr_media(peer, msg, size=None):
