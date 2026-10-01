@@ -118,16 +118,17 @@ async def retr_rss(session, request, peer, offset=0, limit=25):
     link=link, avatar=avatar, date=date, build=build, offset=offset)
 
 
-async def resolve_peer_with_media(session, request, peer_id, msg, size=None):
+async def resolve_peer_with_media(session, request, peer_id, msg,
+                                  size=None, file_id=None):
   try:
     input_peer = await session.client.get_input_entity(int(peer_id))
   except ValueError as e:
     return str(e), 400
 
-  return await retr_media(session, request, input_peer, msg, size)
+  return await retr_media(session, request, input_peer, msg, size, file_id)
 
 
-async def retr_media(session, request, peer, msg, size=None):
+async def retr_media(session, request, peer, msg, size=None, file_id=None):
   try:
     msg = int(msg)
     m = await session.client.get_messages(peer, ids=msg)
@@ -137,7 +138,7 @@ async def retr_media(session, request, peer, msg, size=None):
   if not m:
     return f'Unable to fetch message {msg} from {peer}', 404
 
-  if not m.media and not m.action:
+  if not m.media and not m.action and not m.rich_message:
     return f'Unable to fetch media from {m}', 400
 
   if type(peer) != str:
@@ -146,7 +147,14 @@ async def retr_media(session, request, peer, msg, size=None):
   mime_type = 'application/octet-stream'
   name = f'{peer}_{msg}.bin'
   source = None
-  if m.document:
+  if m.rich_message:
+    photos = {str(photo.id): photo for photo in m.rich_message.photos}
+    if file_id not in photos:
+      return f'Unable to find file {file_id} in message {msg}', 404
+    source = photos[file_id]
+    mime_type = 'image/jpeg'
+    name = f'{peer}_{msg}_{file_id}.jpg'
+  elif m.document:
     source = m.document
     mime_type = m.document.mime_type
     for attribute in m.document.attributes:

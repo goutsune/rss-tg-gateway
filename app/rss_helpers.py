@@ -1,9 +1,35 @@
+from html import escape
+
 from telethon.tl.types import MessageService, \
                                 MessageActionPinMessage, \
                                 MessageActionChatEditPhoto, \
-                                MessageActionChannelCreate
+                                MessageActionChannelCreate, \
+                                PageBlockParagraph, \
+                                PageBlockPhoto, \
+                                TextPlain, \
+                                TextConcat, \
+                                TextUrl, \
+                                TextBold, \
+                                TextItalic, \
+                                TextUnderline, \
+                                TextStrike, \
+                                TextFixed, \
+                                TextMarked, \
+                                TextSubscript, \
+                                TextSuperscript
 
 import config
+
+rich_tags = {
+  TextBold: 'b',
+  TextItalic: 'i',
+  TextUnderline: 'u',
+  TextStrike: 's',
+  TextFixed: 'code',
+  TextMarked: 'mark',
+  TextSubscript: 'sub',
+  TextSuperscript: 'sup',
+}
 
 
 def get_filename(attributes):
@@ -11,6 +37,38 @@ def get_filename(attributes):
   for attribute in attributes:
     if hasattr(attribute, 'file_name'):
       return attribute.file_name
+
+
+def render_rich_text(text, html=True):
+  if type(text) == TextPlain:
+    return escape(text.text)
+  if type(text) == TextConcat:
+    return ''.join(render_rich_text(t, html=html) for t in text.texts)
+  # TextEmpty and other leaves without nested text
+  if not hasattr(text, 'text'):
+    return ''
+
+  inner = render_rich_text(text.text, html=html)
+
+  if html:
+    if type(text) == TextUrl:
+      return f'<a href="{escape(text.url)}">{inner}</a>'
+    if type(text) in rich_tags:
+      tag = rich_tags[type(text)]
+      return f'<{tag}>{inner}</{tag}>'
+
+  return inner
+
+
+def render_rich_message(rich, media_url):
+  text = ''
+  for block in rich.blocks:
+    if type(block) == PageBlockParagraph:
+      text += '<p style="white-space: pre-line">'\
+              f'{render_rich_text(block.text)}</p>'
+    elif type(block) == PageBlockPhoto:
+      text += f'<img src="{media_url}?file_id={block.photo_id}" />'
+  return text
 
 
 async def get_name_from_msg(session, message):
@@ -64,6 +122,17 @@ async def render_msg(session, peer_info, m):
   if m.text:
     msg['text'] += f'<p style="white-space: pre-line">{m.text}</p>'
 
+  # Blog-like message
+  if m.rich_message:
+    msg['text'] += render_rich_message(
+      m.rich_message, f'{media_base}/{peer}/{m.id}')
+    # Find first text block object in message, use that to render title
+    for block in m.rich_message.blocks:
+      if type(block) == PageBlockParagraph:
+        msg['title'] = render_rich_text(block.text, html=False)
+        if len(msg['title']) > 60:
+          msg['title'] = msg['title'][0:60] + '…'
+        break
   # ################### Processing attachments
   # =================== Photo
   if (m.photo and not m.web_preview) or m.sticker:
