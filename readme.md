@@ -1,9 +1,10 @@
-# Telegram to RSS converter
+# Caveman Telegram Experience
 
-Quick and dirty thing which serves newsfeeds for your Telegram channels
+This project attempts to provide useful telegram experience through classic protocols. Personal use only.
 
-Uses Quart and Telethon
+Mostly WIP, planned features:
 
-TODO:
-* Do something less silly when rendering the message, perhaps make renderer classes?
-* Add sme kind of caching. No matter what I do there is noticeable delay when receiving media.
+* RSS feeds for Channels (Ported from Quart app)
+* HTTP proxy for media (Also ported)
+* IRC server for messaging (see doc/telegram-ircd for rough plan)
+* SMTP/local mail delivery agent for message digests

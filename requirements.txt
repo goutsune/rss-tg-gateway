@@ -1,4 +1,4 @@
 telethon
 cryptg
-aiohttp
-quart
+twisted
+jinja2

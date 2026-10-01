@@ -1,6 +1,18 @@
+import asyncio
+import os
+import sys
 from datetime import datetime
-from quart import Quart, Response, render_template, request, abort
-import hypercorn.asyncio
+
+from twisted.internet import asyncioreactor
+asyncioreactor.install()  # Needs to be before other stuff
+from twisted.internet import reactor
+from twisted.internet.defer import Deferred
+from twisted.internet.interfaces import IPushProducer
+from twisted.python import log
+from twisted.python.failure import Failure
+from twisted.web import pages, resource, server
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from zope.interface import implementer
 from telethon import TelegramClient
 from telethon import utils
 from telethon.tl.functions.channels import GetFullChannelRequest
@@ -12,17 +24,20 @@ from telethon.tl.types import InputPeerChannel, \
                                 MessageActionChatEditPhoto, \
                                 MessageActionChannelCreate
 from telethon.errors.rpcerrorlist import ChannelPrivateError
-from config import api_id, api_hash, user
 
-app = Quart(__name__)
-host = "http://127.0.0.1:9504"
+import config
+
+# Preconfigure jinja2 template env
+templates = Environment(
+  loader=FileSystemLoader(os.path.join(os.path.dirname(__file__), 'templates')),
+  autoescape=select_autoescape())
 
 
 class MadMachine:
 
-  def __init__(self, session, api_id, api_hash):
+  def __init__(self):
 
-    self.client = TelegramClient(user, api_id, api_hash)
+    self.client = TelegramClient(config.user, config.api_id, config.api_hash)
     self.client.parse_mode = 'html'
     # Cache for resolving peers
     self.users = {}
@@ -113,10 +128,10 @@ class MadMachine:
 
     if private:
       msg['link'] = f'https://t.me/c/{peer_info.id}/{m.id}'
-      media_base = f'{host}/media/i'
+      media_base = f'{config.host}/media/i'
     else:
       msg['link'] = f'https://t.me/{peer_info.username}/{m.id}'
-      media_base = f'{host}/media'
+      media_base = f'{config.host}/media'
 
     # Actual post text
     if m.text:
@@ -229,10 +244,8 @@ class MadMachine:
     return msg
 
 
-# ###################### Quart setup
-@app.route('/rss/<user>')
-@app.route('/rss/<user>/<int:offset>')
-async def retr_rss_user(user, offset=0):
+# ###################### Handlers
+async def retr_rss_user(request, user, offset=0):
   try:
     peer = await c.client.get_input_entity(user)
   except ValueError:
@@ -246,26 +259,35 @@ async def retr_rss_user(user, offset=0):
   except ChannelPrivateError:
     return 'Private channel, sorry!', 403
 
-  return await retr_rss(user, offset)
+  return await retr_rss(request, user, offset)
 
 
-@app.route('/rss/i/<int:peer>')
-@app.route('/rss/i/<int:peer>/<int:offset>')
-async def retr_rss(peer, offset=0):
+async def retr_rss_id(request, peer, offset=0):
+  try:
+    peer = int(peer)
+  except ValueError as e:
+    return str(e), 400
+
+  return await retr_rss(request, peer, offset)
+
+
+async def retr_rss(request, peer, offset=0):
   # Abort shortly on HEAD request to save time
-  if request.method == 'HEAD':
-    return "OK"
+  if request.method == b'HEAD':
+    return 'OK'
 
-  limit = int(request.args.get('limit', '25'))
+  limit = int(request.args.get(b'limit', [b'25'])[0])
   try:
     msgs = await c.client.get_messages(peer,
                                        limit=limit,
-                                       add_offset=offset)
+                                       add_offset=int(offset))
   except ChannelPrivateError:
     return 'Private channel, sorry!', 403
+  except ValueError as e:
+    return str(e), 400
 
   if not msgs:
-    abort(400)
+    return 'Bad Request', 400
 
   # Fetch 10 more messages if last message fetched is part of a group
   if msgs[-1].grouped_id:
@@ -290,10 +312,10 @@ async def retr_rss(peer, offset=0):
 
   if peer_info.username:
     link = f'https://t.me/{peer_info.username}'
-    avatar = f'{host}/profile/{peer_info.username}'
+    avatar = f'{config.host}/profile/{peer_info.username}'
   else:
     link = f'https://t.me/c/{peer}'
-    avatar = f'{host}/profile/{peer}'
+    avatar = f'{config.host}/profile/{peer}'
 
   title = utils.get_display_name(peer_info)
   # date = datetime.today().strftime(r'%a, %d %b %Y %H:%M:%S %z')
@@ -320,33 +342,32 @@ async def retr_rss(peer, offset=0):
 
   res.extend(fin.values())
 
-  return await render_template(
-    'rss.html', contents=res, peer=peer, info=info, title=title,
+  return templates.get_template('rss.html').render(
+    contents=res, peer=peer, info=info, title=title,
     link=link, avatar=avatar, date=date, build=build, offset=offset)
 
 
-@app.route('/')
-@app.route('/rss/favicon.ico')
-async def retr_404():
-  return 'Error', 404
+async def resolve_peer_with_media(request, peer_id, msg, size=None):
+  try:
+    input_peer = await c.client.get_input_entity(int(peer_id))
+  except ValueError as e:
+    return str(e), 400
+
+  return await retr_media(request, input_peer, msg, size)
 
 
-@app.route('/media/i/<int:peer_id>/<int:msg>/<size>')
-@app.route('/media/i/<int:peer_id>/<int:msg>')
-async def resolve_peer_with_media(peer_id, msg, size=None):
-  input_peer = await c.client.get_input_entity(peer_id)
-  return await retr_media(input_peer, msg, size)
-
-@app.route('/media/<peer>/<int:msg>/<size>')
-@app.route('/media/<peer>/<int:msg>')
-async def retr_media(peer, msg, size=None):
-  m = await c.client.get_messages(peer, ids=msg)
+async def retr_media(request, peer, msg, size=None):
+  try:
+    msg = int(msg)
+    m = await c.client.get_messages(peer, ids=msg)
+  except ValueError as e:
+    return str(e), 400
 
   if not m:
-    return(f'Unable to fetch message {msg} from {peer}', 404)
+    return f'Unable to fetch message {msg} from {peer}', 404
 
   if not m.media and not m.action:
-    return(f'Unable to fetch media from {m}', 400)
+    return f'Unable to fetch media from {m}', 400
 
   if type(peer) != str:
     peer = peer.access_hash
@@ -369,7 +390,7 @@ async def retr_media(peer, msg, size=None):
     mime_type = 'image/jpeg'
     name = f'{peer}_{msg}.jpg'
   else:
-    return(f'Unknown media type {m.media}', 400)
+    return f'Unknown media type {m.media}', 400
 
   if size is not None:
     size = int(size)
@@ -387,16 +408,15 @@ async def retr_media(peer, msg, size=None):
   return send_media, {
     'Content-Type': mime_type,
     'Cache-Control': 'no-cache',
-    'Transfer-Encoding': 'chunked',
     'Content-Disposition': f'inline; filename={name}'}
 
 
-@app.route('/profile/<peer>')
-@app.route('/profile/<peer>/icon.jpg')
-@app.route('/profile/<peer>/favicon.ico')
-async def retr_avatar(peer):
+async def retr_avatar(request, peer, icon=None):
 
-  input_peer = await c.client.get_input_entity(peer)
+  try:
+    input_peer = await c.client.get_input_entity(peer)
+  except ValueError as e:
+    return str(e), 400
 
   return await c.client.download_profile_photo(input_peer, file=bytes), {
     'Content-Type': 'image/jpeg',
@@ -404,7 +424,6 @@ async def retr_avatar(peer):
     'Content-Disposition': f'inline; filename={peer}'}
 
 
-@app.before_serving
 async def startup():
   print("Connecting...")
   await c.client.start()
@@ -413,25 +432,129 @@ async def startup():
   print("OK!")
 
 
-@app.after_serving
 async def cleanup():
   print("Disconnecting...")
   await c.client.disconnect()
   print("OK!")
 
-@app.before_request
+
 async def conn_check():
   if not c.client.is_connected():
     print("Not connected, reconnecting...")
     await startup()
 
+
+# ###################### Twisted setup
+
+# Workaround for slow telegram data fetches
+@implementer(IPushProducer)
+class Throttle:
+  '''
+  '''
+
+  def __init__(self):
+    self.ready = asyncio.Event()
+    self.ready.set()
+
+  def pauseProducing(self):
+    self.ready.clear()
+
+  def resumeProducing(self):
+    self.ready.set()
+
+  def stopProducing(self):
+    pass
+
+
+class Endpoint(resource.Resource):
+  isLeaf = True
+
+  def __init__(self, handler, peer):
+    super().__init__()
+    self.handler = handler
+    self.peer = peer
+
+  def render_GET(self, request):
+    task = asyncio.ensure_future(self.respond(request))
+    request.notifyFinish().addErrback(lambda _: task.cancel())
+    return server.NOT_DONE_YET
+
+  async def respond(self, request):
+    try:
+      raise ValueError('Boo, gimme your lunch money.')
+      await conn_check()
+
+      result = await self.handler(
+        request, self.peer, *[s.decode() for s in request.postpath])
+
+      request.setHeader('Content-Type', 'text/html; charset=utf-8')
+
+      # Some ghetto hacking to keep response shapes same as in Quart
+      body, extra = result \
+        if isinstance(result, tuple) \
+        else (result, None)
+
+      # int for return code
+      if isinstance(extra, int):
+        request.setResponseCode(extra)
+      # dict for headers
+      elif isinstance(extra, dict):
+        for name, value in extra.items():
+          request.setHeader(name, value)
+      else:
+        raise ValueError(f'What are you feeding into response meta? Hint: {extra}')
+
+      # Need to manually encode body, sheesh
+      if isinstance(body, str):
+        request.write(body.encode())
+      # I think only avatar uses that
+      elif isinstance(body, bytes):
+        request.write(body)
+      # Streamed responses
+      else:
+        throttle = Throttle()
+        request.registerProducer(throttle, True)
+        async for chunk in body:
+          request.write(chunk)
+          await throttle.ready.wait()
+        request.unregisterProducer()
+
+      request.finish()
+
+    except Exception as e:  # Let's do some generic wapping here
+      request.processingFailed(Failure())
+
+# Generic to quickly inject handler function without writing whole class
+class MyResouce(resource.Resource):
+
+  def __init__(self, handler):
+    super().__init__()
+    self.handler = handler
+
+  def getChild(self, name, request):
+    return Endpoint(self.handler, name.decode())
+
+# Wire routes
+rss = MyResouce(retr_rss_user)
+rss.putChild(b'i', MyResouce(retr_rss_id))
+rss.putChild(b'favicon.ico', pages.notFound())
+
+media = MyResouce(retr_media)
+media.putChild(b'i', MyResouce(resolve_peer_with_media))
+
+root = resource.Resource()
+root.putChild(b'rss', rss)
+root.putChild(b'media', media)
+root.putChild(b'profile', MyResouce(retr_avatar))
+
+
 # #################### Init
-async def main():
-  config = hypercorn.Config()
-  config.bind = ["localhost:9504"]
-  await hypercorn.asyncio.serve(app, config)
-
-
-c = MadMachine(user, api_id, api_hash)
+c = MadMachine()
 if __name__ == '__main__':
-  c.client.loop.run_until_complete(main())
+  asyncio.get_event_loop().run_until_complete(startup())
+  log.startLogging(sys.stdout)
+  reactor.addSystemEventTrigger(
+    'before', 'shutdown',
+    lambda: Deferred.fromFuture(asyncio.ensure_future(cleanup())))
+  reactor.listenTCP(9504, server.Site(root), interface='127.0.0.1')
+  reactor.run()

@@ -1,0 +1,147 @@
+# IRCd for accessing Telegram network
+
+I am getting fed up with Telegram client experience. All these reactions, stickers, stories, notifications popping up from anywhere, I'm just done with it.
+
+However it is also a network which is far more prevalent than Discord around my peers (and no, not because of cryptoai BS), so I need to be able to interact with it to some extent. I enjoy the more text-first nature of discord, but don't really enjoy firing up a whole chromium for a chat program, I miss ripcord, oh yes.
+
+One night (this one) brought me to an idea: why not serialize protocol into good old IRC server, so that I can connect to it inside my home network and then interact through both irssi and Hexchat? Yeah that sounds about right, but I enjoy minimalism or it, and I even used telegram in a similar way at first - back around 2016~2019 period I refused to install bulky desktop client that requires Qt and used pidgin with C client implementation by vysheng (name may vary, my memory is vague on names).
+
+
+# What I've tried
+
+I am writing this document right as I am using irgramd. I also used bitlbee for a short time.
+
+## Irgramd
+
+This sofware generally works, but completely misses "readable" point from above. Each message is prefixed with index which then can be used to make a reply, send a file or do a forward. I guess it's pragmatic, but I don't enjoy all that visual clutter.
+
+It uses "local file downloader with external http server" approach to serve media, but it never bothers converting filenames to slugs, this breaks url highlights, and it uses weird random IDs for keying instead of object IDs from mtproto, making the whole cache useless upon restart.
+
+It does not follow normal username conventions, channel names are whatever gibberish there is in display name sans spaces, not nice. I think some sanity checks are done on usernames.
+
+It does not handle own messages sent into PM, instead you get new PM from yourself, not really readable unless you are perhaps using telnet as an IRC client ;)
+
+The most painful point for me is how topics are handled: they are not, so if discussion happens in chat topic, you have 50-something character topic for each message.
+
+## Bitlbee + purple plugin support + telegram-tdlib
+
+I tried this in 2022 I think. This suffers heavily from being a conversion of a conversion, hitting libpurple's own chat model limitation.
+
+It sent media via XDCC, rather useless to me, I connect to remote terminal.
+
+It did not provide facilities to do replies and forwards, again, because libpurple itself does not has it.
+
+Additionally it was a hassle to set up. It might be OK to use if you have MANY accounts on many systems, but it is really no one size fits all problem here, and it's applied twice.
+
+
+## Non-goals
+
+Obviously mtproto (the protocol behind telegram software) has MANY concepts which plain old IRC never heard of, so tradeoffs will have to be made. Let me state them early:
+
+* Comprehensive rich display of all message objects, there are TUI clients for that
+* File sharing, that one is better handled with original client
+* Channel/Chat authoring and moderation, too much of a hassle for a rare task
+* Personal stalking helper - hell no, I don't care about deletes, edits - maybe, but needs a damn good way to represent them in a compact way. I think I will base last seen in whois on last message from a user in known chat. It's good to know if there's a point in pinging a user.
+* Channel feed viewer - I mostly don't care about chats in telegram, and if I DO - there is another telegram-rss bridge that have been serving me well for about 3 years already.
+* Multi-user gateway, no on-line user management, you enter your credentials, authorize session once, done. The ircd server side is intended to be ran over localhost or single-user VPN. It's possible however to expose it to the internet safely - nginx+stream proxy. Use certificate auth and you're good to go. I used this setup for ZNC, completely avoiding its own tls support of unknown state.
+
+
+# First-class messaging
+
+There going to be a lot of media content in chats, personally I need a way to access some of it, but I don't want it to be primary usecase. First-class support is instead required for messaging in PMs, in chats, maybe channel replies, not sure.
+
+So what does first-class support mean in the context of telegram?
+
+1. Message contains complete text
+2. Message can be a reply to another message
+3. Message can be a forwarded one
+4. Message can be a reply to special topic-object^1
+
+1) Mtproto was not designed to have chat subfolders to further filter large chats into different topics. What was done instead is special topic-starter object sent to the chat. The frontend is then expcted to create folders when it fetches any messages which are a reply to that object. Hacky.
+
+As you can expect non of these have native representation in IRC, we're talking simple lines of text here, haha.
+
+Another point of note are names in mtproto - there are 3 of them:
+
+* Taggable @-preffixed public names which fit into [0-9a-zA-Z_] range. Perfect for IRC, however not all accounts have them
+* Displayed name/lastname/chatname - arbitrary name assignable to peer^2 objects, non-public chats and users only have that. Because of unicode nature they're less then ideal for IRC channel and user names
+* Displayed name in message forwards - last-minute-added "security" feacture that hides Peer object in message and instead gives you simple string to display, same as displayed name usually.
+
+2) Peer is an abstract object that is then extended by user, channel, chat, and (super)group^3 implementation
+3) Chats and supergroups? Yes, at some point they could not fit all features they wanted in a plain Chat and another extended object Group was created. Duh. They work somewhat same, but groups store complete'ish log on telegram servers. I think there are many more small differences but I can't remember them.
+
+
+# Plain old IRC
+
+Let's see what IRC equivalents do we have here. Oh, we have message sender and a single line of text. Great, that's not much, duh. 
+
+Let's then decide how we are going to represent this in IRC via various tradeoffs:
+
+## 1. Timestamps
+
+All mtproto messages have server-side timestamp in UTC timzeone. I will need to check how server-side message capability is defined and use that. Both hexchat and irssi can use it.
+
+## 2. History
+
+At first I thought about using server-side history capability of some IRc clients. But I really enjoyed irgramd's !h command that dumps history relative to last read marker. Might as well just go with that. And yes, better update that marker on every sent message, no stalker-like gizmos.
+
+## 3. Text
+
+A message body is preprocessed, actual newlines replaced by something like $R$N (\r\n is too common when you send bash scripts and whatnot).
+
+Then a helper on the client side is made to break lines from incoming message. I think that's the only safe way to do it, and I don't plan to change clients a lot, so that's fine.
+
+TODO: Elaborate on mtproto markup <-> plaintext conversion.
+
+## 4. Names. 
+
+I want to have clean IRC names in the channel, for this specific case I'd add small sqlite database to do the matching between account ID, alias and last shown name (caching), addtionaly an irc bot interface will be needed to manage them. 
+
+Initially fill in order of priority: username -> displayname slug -> numeric ID. numeric ID is possible if latin conversion does not produce any sensible result (just symbols or empty string). In this case user is expected to enter useful alias ASAP. By mentioning such a user in chat, backen then must lookup ID in table and insert appropriate highlight tag instead of text.
+
+Example: "foo: glad you're having a nice dinner once in a while"
+Becomes: "[Mr. Foo], glad you're having(...)"
+Where [Mr. Foo] is a current user's displayname in the telegram network. 
+
+Colon is chosen as a separator as a compromise between readability and clashes. E.g.: "man, what a day" might become a mention if there is a literal "man" user alias in the conversation. "::" would be used to send literal text, always.
+
+I also need to address IRC limitation - you can not in any sensible way *receive* a private message from yourself inside conversation with a user. This means I am force to display PMs sent from some other client as messages sent by user foo. I will probably prefix them with something like "*me: " and then process such messages on the irssi client side, that's 2 postprocessing scripts now.
+
+## 5. Replies. 
+
+I need 2 separate approaches for replies that follow current topic and are fairly easy to comprehend in a short form, and replies to "far" messages which commonly happen when somebody begins to reply to chat log on the next day.
+
+For short messages something like "> Let me intercep(...) | {reply_body}" is okay, this is exactly what I do when replying in IRC, and it will feel natural to me. I think I tend to copy about half of the terminal line or just type in specific terms so that reader understand what I am replying to during the talk.
+
+For "far" replies I wil probably want to supply complete message first (prefixed with >, like email, then add actual message body. I think I will always stick to short replies it poster only sends a smiley/sticker.
+
+To reply to the message on the irc side I think I will want 2 ways:
+
+1. Bang command !R with partial message text to match, followed with pipe. Same as short format but backwards, client is the supposed to do search for past N lines, if message is found, make whever goes after | - the message body, otherwise send error via notice.
+2. Bang command !r with username alias, coolon, then message body. This should find latest message from a user and reply to it, feels like a useful shorthand in ongoing dialogue in the chat. In case of PM !r should only contain message body.
+
+## 6. Forwards
+
+Well these are basically messages with known from field. Some people repost LOTS of images/videos from other channels, in many cases they don't contain much text. I'd do the next:
+
+foo: (F: bar) {message content}
+
+Where foo is our sender alias, and bar is again best-effort slug conversion or existing alias. 
+
+I do not want to use actual display name there as it can be rather long, and I'd much prefer to keep it to single line for short texts.
+
+
+## 7. Media
+
+Messages can have media attached to them: music, images, stickers, "gif", generic file data. Either a simple sidecar http server that takes args and spits result with mime, or a local downloader with IRC serializer pointing to cache folder root is ok. 
+
+I am a little bit more into realtime server here - otherwise we might be sending a link for a while not yet existing on the disc, bummer. And cleanup is a chore. I've alredy implemented such server for rss bridge to serve post media via http anyway.
+
+There will be many stickers. I don't care about image2ascii conversion crap. Instead just send a link + spit sticker emojis. I think that's good enough.
+
+Telegram extracts http metadata for http links, notably site name, cover image and description. Initially I thought about extracting just title and add that after URL, but many sites only use generic title. Will description work better then? I think it will, on some sites title is visible in URL slug anyway.
+
+---
+
+Well guess what, we have lots of hard choices to do here, and I am glad I started to write them down, some of silly ideas bacame very apparent right away (url titles and using *-preffixed usernames for aliases). I have initially thought or refactoring irgramd to suit for my needs, but that roject suffers from some real bad spaghetti syndome. Lot's of inplace formatting, repeated procedures and domains lumped together into few big blobs. I will probably extend my rss gateway instead to provide a complete "caveman" telegram experience instead.
+
