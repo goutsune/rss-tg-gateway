@@ -17,7 +17,7 @@ templates = Environment(
   autoescape=select_autoescape())
 
 
-async def retr_rss_user(session, request, user, offset=0):
+async def retr_rss_user(session, request, user, offset=0, limit=25):
   try:
     peer = await session.client.get_input_entity(user)
   except ValueError:
@@ -31,27 +31,26 @@ async def retr_rss_user(session, request, user, offset=0):
   except ChannelPrivateError:
     return 'Private channel, sorry!', 403
 
-  return await retr_rss(session, request, user, offset)
+  return await retr_rss(session, request, user, offset, limit)
 
 
-async def retr_rss_id(session, request, peer, offset=0):
+async def retr_rss_id(session, request, peer, offset=0, limit=25):
   try:
     peer = int(peer)
   except ValueError as e:
     return str(e), 400
 
-  return await retr_rss(session, request, peer, offset)
+  return await retr_rss(session, request, peer, offset, limit)
 
 
-async def retr_rss(session, request, peer, offset=0):
+async def retr_rss(session, request, peer, offset=0, limit=25):
   # Abort shortly on HEAD request to save time
   if request.method == b'HEAD':
     return 'OK'
 
-  limit = int(request.args.get(b'limit', [b'25'])[0])
   try:
     msgs = await session.client.get_messages(peer,
-                                             limit=limit,
+                                             limit=int(limit),
                                              add_offset=int(offset))
   except ChannelPrivateError:
     return 'Private channel, sorry!', 403

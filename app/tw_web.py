@@ -46,7 +46,8 @@ class Endpoint(resource.Resource):
 
       result = await self.handler(
         self.session, request, self.peer,
-        *[s.decode() for s in request.postpath])
+        *[s.decode() for s in request.postpath],
+        **{k.decode(): v[0].decode() for k, v in request.args.items()})
 
       request.setHeader('Content-Type', 'text/html; charset=utf-8')
 
