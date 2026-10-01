@@ -1,0 +1,7 @@
+api_id = XXXXXXX
+api_hash = 'XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX'
+user = 'foo'
+# Base URL for feeds links
+host = 'http://127.0.0.1:9504'
+bind = '127.0.0.1'
+port = 9504
