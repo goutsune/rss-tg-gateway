@@ -182,6 +182,26 @@ async def retr_media(session, request, peer, msg, size=None):
     'Content-Disposition': f'inline; filename={name}'}
 
 
+async def retr_msg(session, request, peer, msg):
+  try:
+    msg = int(msg)
+    m = await session.client.get_messages(peer, ids=msg)
+  except ValueError as e:
+    return str(e), 400
+
+  if not m:
+    return f'Unable to fetch message {msg} from {peer}', 404
+
+  peer_info = await session.client.get_entity(peer)
+
+  return templates.get_template('message.html').render(
+    msg=await render_msg(session, peer_info, m),
+    title=utils.get_display_name(peer_info),
+    link=f'https://t.me/{peer}',
+    avatar=f'{config.host}/profile/{peer}',
+    info='')
+
+
 async def retr_avatar(session, request, peer, icon=None):
 
   try:

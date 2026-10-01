@@ -26,6 +26,7 @@ media.putChild(b'i', MyResouce(session, handlers.resolve_peer_with_media))
 root = resource.Resource()
 root.putChild(b'rss', rss)
 root.putChild(b'media', media)
+root.putChild(b'msg', MyResouce(session, handlers.retr_msg))
 root.putChild(b'profile', MyResouce(session, handlers.retr_avatar))
 
 
