@@ -1,3 +1,6 @@
+''' A Telegram session singleton, I intend to store here raw client and a few helpers, mostly to resolve
+between display names, aliases and Peer objects.
+'''
 from telethon import TelegramClient
 from telethon.errors.rpcerrorlist import ChannelPrivateError
 
@@ -9,8 +12,8 @@ class TelegramSession:
   def __init__(self):
 
     self.client = TelegramClient(config.user, config.api_id, config.api_hash)
-    self.client.parse_mode = 'html'
-    # Cache for resolving peers
+    self.client.parse_mode = 'html'  # hmm, is this configurable on the fly I wonder
+    # Cache for resolving peers, move to sqlite
     self.users = {}
     # Cache for author names when retrieving channel messages
     self.author_names = {}

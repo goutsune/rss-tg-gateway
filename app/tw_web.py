@@ -1,3 +1,5 @@
+''' Configuration for Twisted.Web module, providing browseable resources over HTTP
+'''
 import asyncio
 
 from twisted.internet.interfaces import IPushProducer
@@ -44,11 +46,12 @@ class Endpoint(resource.Resource):
     try:
       await self.session.conn_check()
 
-      result = await self.handler(
-        self.session, request, self.peer,
-        *[s.decode() for s in request.postpath],
-        **{k.decode(): v[0].decode() for k, v in request.args.items()})
+      # Ugh. Some ghetto request path and query splitting. extra path elements become args
+      # and query parameters become kwargs. No typing, handler has to type them.
+      args = [s.decode() for s in request.postpath]
+      query_params = {k.decode(): v[0].decode() for k, v in request.args.items()}
 
+      result = await self.handler(self.session, request, self.peer, *args, **query_params)
       request.setHeader('Content-Type', 'text/html; charset=utf-8')
 
       # Some ghetto hacking to keep response shapes same as in Quart
@@ -69,9 +72,11 @@ class Endpoint(resource.Resource):
       # Need to manually encode body, sheesh
       if isinstance(body, str):
         request.write(body.encode())
+
       # I think only avatar uses that
       elif isinstance(body, bytes):
         request.write(body)
+
       # Streamed responses
       else:
         throttle = Throttle()

@@ -1,3 +1,5 @@
+''' HTTP server endpoints live here
+'''
 import os
 from datetime import datetime
 
@@ -49,9 +51,7 @@ async def retr_rss(session, request, peer, offset=0, limit=25):
     return 'OK'
 
   try:
-    msgs = await session.client.get_messages(peer,
-                                             limit=int(limit),
-                                             add_offset=int(offset))
+    msgs = await session.client.get_messages(peer, limit=int(limit), add_offset=int(offset))
   except ChannelPrivateError:
     return 'Private channel, sorry!', 403
   except ValueError as e:
@@ -118,8 +118,7 @@ async def retr_rss(session, request, peer, offset=0, limit=25):
     link=link, avatar=avatar, date=date, build=build, offset=offset)
 
 
-async def resolve_peer_with_media(session, request, peer_id, msg,
-                                  size=None, file_id=None):
+async def resolve_peer_with_media(session, request, peer_id, msg, size=None, file_id=None):
   try:
     input_peer = await session.client.get_input_entity(int(peer_id))
   except ValueError as e:
