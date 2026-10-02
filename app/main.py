@@ -6,12 +6,14 @@ from twisted.internet import asyncioreactor
 asyncioreactor.install()  # Needs to be before other stuff
 from twisted.internet import reactor
 from twisted.internet.defer import Deferred
+from twisted.internet.protocol import Factory
 from twisted.python import log
 from twisted.web import pages, resource, server
 
 import config, handlers
 from tg_session import TelegramSession
 from tw_web import MyResouce
+from tw_irc import TelegramIRCFactory
 
 session = TelegramSession()
 
@@ -37,5 +39,8 @@ if __name__ == '__main__':
   reactor.addSystemEventTrigger(
     'before', 'shutdown',
     lambda: Deferred.fromFuture(asyncio.ensure_future(session.cleanup())))
-  reactor.listenTCP(config.port, server.Site(root), interface=config.bind)
+
+  reactor.listenTCP(config.web_port, server.Site(root), interface=config.bind)
+  reactor.listenTCP(config.irc_port, TelegramIRCFactory(session), interface=config.bind)
+
   reactor.run()

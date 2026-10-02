@@ -4,4 +4,5 @@ user = 'foo'
 # Base URL for feeds links
 host = 'http://127.0.0.1:9504'
 bind = '127.0.0.1'
-port = 9504
+web_port = 9504
+irc_port = 6667
