@@ -10,7 +10,7 @@ from twisted.internet.protocol import Factory
 from twisted.python import log
 from twisted.web import pages, resource, server
 
-import config, handlers
+import config, handlers, models
 from tg_session import TelegramSession
 from tw_web import MyResouce
 from tw_irc import TelegramIRCFactory
@@ -34,11 +34,15 @@ root.putChild(b'profile', MyResouce(session, handlers.retr_avatar))
 
 # #################### Init
 if __name__ == '__main__':
+  asyncio.get_event_loop().run_until_complete(models.init())
   asyncio.get_event_loop().run_until_complete(session.startup())
   log.startLogging(sys.stdout)
   reactor.addSystemEventTrigger(
     'before', 'shutdown',
     lambda: Deferred.fromFuture(asyncio.ensure_future(session.cleanup())))
+  reactor.addSystemEventTrigger(
+    'before', 'shutdown',
+    lambda: Deferred.fromFuture(asyncio.ensure_future(models.close())))
 
   reactor.listenTCP(config.web_port, server.Site(root), interface=config.bind)
   reactor.listenTCP(config.irc_port, TelegramIRCFactory(session), interface=config.bind)

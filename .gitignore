@@ -3,3 +3,4 @@
 env
 __pycache__
 /app/*.session*
+/app/*.db*

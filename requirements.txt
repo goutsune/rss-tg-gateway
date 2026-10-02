@@ -2,3 +2,5 @@ telethon
 cryptg
 twisted
 jinja2
+tortoise-orm
+python-slugify

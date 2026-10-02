@@ -1,10 +1,13 @@
 ''' A Telegram session singleton, I intend to store here raw client and a few helpers, mostly to resolve
 between display names, aliases and Peer objects.
 '''
-from telethon import TelegramClient
+from slugify import slugify
+from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
+from telethon.tl.types import User
 
 import config
+from models import Peer
 
 
 class TelegramSession:
@@ -13,45 +16,38 @@ class TelegramSession:
 
     self.client = TelegramClient(config.user, config.api_id, config.api_hash)
     self.client.parse_mode = 'html'  # hmm, is this configurable on the fly I wonder
-    # Cache for resolving peers, move to sqlite
-    self.users = {}
 
-  async def resolve_peer(self, peer):
+  async def resolve_peer(self, peer, force=False):
     ''' A helper funtion to avoid re-requesting user names when
     resolving them from peer identifier objects. Currently it just
     stores rendered name never updating it, which might be a problem.
     '''
+    peer_id = utils.get_peer_id(peer)
+    record = await Peer.get_or_none(id=peer_id)
+    if record and not force:
+      return record.display_name
+
     try:
-      # This processes normal users, preserving their usernames along
-      # with full name if possible
-      if hasattr(peer, 'user_id'):
-        uid = peer.user_id
-        if uid not in self.users:
-          entity = await self.client.get_entity(peer)
-          if entity.last_name:
-            if entity.username:
-              self.users[uid] = f'{entity.first_name} '\
-                                f'{entity.last_name} ({entity.username})'
-            else:
-              self.users[uid] = f'{entity.first_name} {entity.last_name}'
-          elif entity.first_name:
-            if entity.username:
-              self.users[uid] = f'{entity.first_name} ({entity.username})'
-            else:
-              self.users[uid] = f'{entity.first_name}'
-
-      # This gets channel names
-      if hasattr(peer, 'channel_id'):
-        uid = peer.channel_id
-        if uid not in self.users:
-          channel = await self.client.get_entity(peer)
-          # TODO: confirm ID pool is shared betweeen channels and users
-          self.users[uid] = channel.title
-
+      entity = await self.client.get_entity(peer)
     except ChannelPrivateError:
       return False
 
-    return self.users[uid]
+    # Channel and chat titles go into first_name
+    if isinstance(entity, User):
+      first_name, last_name = entity.first_name, entity.last_name
+      display_name = utils.get_display_name(entity)
+      if entity.username:
+        display_name += f' ({entity.username})'
+    else:
+      first_name, last_name = entity.title, None
+      display_name = entity.title
+
+    username = getattr(entity, 'username', None)
+    record = await Peer.create(
+      id=peer_id, first_name=first_name, last_name=last_name,
+      username=username, display_name=display_name,
+      alias=username or slugify(display_name, max_length=20, separator='_'))
+    return record.display_name
 
   async def startup(self):
     print("Connecting...")
