@@ -15,8 +15,6 @@ class TelegramSession:
     self.client.parse_mode = 'html'  # hmm, is this configurable on the fly I wonder
     # Cache for resolving peers, move to sqlite
     self.users = {}
-    # Cache for author names when retrieving channel messages
-    self.author_names = {}
 
   async def resolve_peer(self, peer):
     ''' A helper funtion to avoid re-requesting user names when

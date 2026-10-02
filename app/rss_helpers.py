@@ -222,12 +222,10 @@ async def render_msg(session, peer_info, m):
     if (type(m.action)) == MessageActionPinMessage:
       if peer_info.username:
         msg['text'] += f'<p>{msg["author"]} pinned '\
-                       f'<a href="https://t.me/{peer_info.username}/'\
-                       f'{m.reply_to_msg_id}">a message</a>.</p>'
+          f'<a href="https://t.me/{peer_info.username}/{m.reply_to_msg_id}">a message</a>.</p>'
       else:
         msg['text'] += f'<p>{msg["author"]} pinned '\
-                       f'<a href="https://t.me/c/{peer_info.id}/'\
-                       f'{m.reply_to_msg_id}">a message</a>.</p>'
+          f'<a href="https://t.me/c/{peer_info.id}/{m.reply_to_msg_id}">a message</a>.</p>'
       msg['title'] = f'{msg["author"]} pinned a message'
     # ================= Channel photo edit
     if (type(m.action)) == MessageActionChatEditPhoto:
