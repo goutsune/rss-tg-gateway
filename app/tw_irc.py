@@ -111,7 +111,7 @@ class IRCConnection(LineOnlyReceiver):
     channel = irc_name(conversation)
     if conversation.kind == PeerKind.TOPIC:
       chat = conversation.forum
-      topic = f'{conversation.display_name} // {await self.factory.chat_topic(chat)}'
+      topic = f'{chat.display_name} // {conversation.display_name}'
     else:
       chat = conversation
       topic = await self.factory.chat_topic(chat)
@@ -261,7 +261,7 @@ class IRCConnection(LineOnlyReceiver):
       if getattr(dialog.entity, 'forum', False):
         for forum_topic in await session.resolve_forum_topics(peer):
           self.reply(irc_protocol.RPL_LIST, irc_name(forum_topic), size,
-                     f'{forum_topic.display_name} // {topic}')
+                     f'{peer.display_name} // {forum_topic.display_name}')
     self.reply(irc_protocol.RPL_LISTEND, 'End of LIST')
 
   async def irc_PRIVMSG(self, target, text):
