@@ -29,7 +29,7 @@ HELP = [
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
   'h [n]: messages here you have not read yet, or the last n',
-  'forums [#chat]: topic channels of a forum chat, the current one by default',
+  'forums [#chat]: forum channels of a chat, the current one by default',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
   '',
   'Writing longer messages:',
@@ -90,21 +90,21 @@ async def cmd_alias(connection, context, rest):
   if not VALID_ALIAS.fullmatch(new):
     notice(connection, context, f'Invalid alias {new}')
     return
-  if peer.kind == PeerKind.TOPIC:
-    is_taken = Peer.filter(kind=PeerKind.TOPIC, forum_id=peer.forum_id)
+  if peer.kind == PeerKind.FORUM:
+    is_taken = Peer.filter(kind=PeerKind.FORUM, chat_id=peer.chat_id)
   else:
-    is_taken = Peer.exclude(kind=PeerKind.TOPIC)
+    is_taken = Peer.exclude(kind=PeerKind.FORUM)
   if await is_taken.exclude(id=peer.id).filter(alias__iexact=new).exists():
     notice(connection, context, f'Alias {new} is taken')
     return
 
-  # A forum's topic channels carry its alias too, they get rejoined along with it
+  # A chat's forum channels carry its alias too, they get rejoined along with it
   conversations = [peer]
   if peer.kind in (PeerKind.CHAT, PeerKind.CHANNEL):
-    topics = await Peer.filter(kind=PeerKind.TOPIC, forum=peer)
-    for topic in topics:
-      topic.forum = peer
-    conversations += topics
+    forums = await Peer.filter(kind=PeerKind.FORUM, chat=peer)
+    for forum in forums:
+      forum.chat = peer
+    conversations += forums
   old_names = [irc_name(conversation) for conversation in conversations]
   old_hostmask = peer_hostmask(peer)
   peer.alias = new
@@ -124,7 +124,7 @@ async def cmd_aliases(connection, context, rest):
   text = rest.strip()
   peers = await Peer.filter(
     Q(alias__icontains=text) | Q(display_name__icontains=text)
-  ).select_related('forum').order_by('alias')
+  ).select_related('chat').order_by('alias')
   for peer in peers:
     notice(connection, context, f'{irc_name(peer)} ({peer.kind.value}): {peer.display_name}')
 
@@ -213,25 +213,25 @@ async def cmd_forums(connection, context, rest):
   if not chat:
     notice(connection, context, f'No such channel {names[0]}')
     return
-  if chat.kind == PeerKind.TOPIC:
-    chat = chat.forum
+  if chat.kind == PeerKind.FORUM:
+    chat = chat.chat
 
   session = connection.factory.session
   entity = await session.client.get_entity(chat.telegram_peer)
   if not getattr(entity, 'forum', False):
-    notice(connection, context, f'{irc_name(chat)} has no topics')
+    notice(connection, context, f'{irc_name(chat)} has no forums')
     return
-  for topic in await session.resolve_forum_topics(chat):
-    notice(connection, context, f'{irc_name(topic)}: {topic.display_name}')
+  for forum in await session.resolve_forums(chat):
+    notice(connection, context, f'{irc_name(forum)}: {forum.display_name}')
 
 
 async def cmd_history(connection, context, rest):
   client = connection.factory.session.client
-  is_topic = context.kind == PeerKind.TOPIC
+  is_forum = context.kind == PeerKind.FORUM
   if rest.strip():
     limit, min_id = int(rest), 0
-  elif is_topic:
-    result = await client(GetForumTopicsByIDRequest(context.telegram_peer, [context.topic_id]))
+  elif is_forum:
+    result = await client(GetForumTopicsByIDRequest(context.telegram_peer, [context.forum_id]))
     limit, min_id = None, result.topics[0].read_inbox_max_id
   else:
     dialog_peer = InputDialogPeer(await client.get_input_entity(context.telegram_peer))
@@ -239,13 +239,13 @@ async def cmd_history(connection, context, rest):
     limit, min_id = None, result.dialogs[0].read_inbox_max_id
 
   messages = await client.get_messages(
-    context.telegram_peer, limit=limit, min_id=min_id, reply_to=context.topic_id)
+    context.telegram_peer, limit=limit, min_id=min_id, reply_to=context.forum_id)
   shown, last_date = 0, None
   for message in reversed(messages):
-    # A forum's own channel is its General topic, the other topics' messages are left out
+    # #chat shows only the General forum, history fetched there skips the other forums
     reply_to = message.reply_to
-    in_topic = isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic
-    if not isinstance(message, Message) or in_topic and not is_topic:
+    in_forum = isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic
+    if not isinstance(message, Message) or in_forum and not is_forum:
       continue
     sender = None
     if not message.out:

@@ -109,8 +109,8 @@ class IRCConnection(LineOnlyReceiver):
 
   async def join_chat(self, conversation):
     channel = irc_name(conversation)
-    if conversation.kind == PeerKind.TOPIC:
-      chat = conversation.forum
+    if conversation.kind == PeerKind.FORUM:
+      chat = conversation.chat
       topic = f'{chat.display_name} // {conversation.display_name}'
     else:
       chat = conversation
@@ -259,9 +259,9 @@ class IRCConnection(LineOnlyReceiver):
       topic = await self.factory.chat_topic(peer)
       self.reply(irc_protocol.RPL_LIST, irc_name(peer), size, topic)
       if getattr(dialog.entity, 'forum', False):
-        for forum_topic in await session.resolve_forum_topics(peer):
-          self.reply(irc_protocol.RPL_LIST, irc_name(forum_topic), size,
-                     f'{peer.display_name} // {forum_topic.display_name}')
+        for forum in await session.resolve_forums(peer):
+          self.reply(irc_protocol.RPL_LIST, irc_name(forum), size,
+                     f'{peer.display_name} // {forum.display_name}')
     self.reply(irc_protocol.RPL_LISTEND, 'End of LIST')
 
   async def irc_PRIVMSG(self, target, text):
@@ -297,16 +297,16 @@ class IRCConnection(LineOnlyReceiver):
     await self.send_to_telegram(peer, text.removeprefix(prefix))
 
   async def send_to_telegram(self, peer, text, reply_to=None):
-    if peer.kind == PeerKind.TOPIC and reply_to is None:
-      reply_to = peer.topic_id
+    if peer.kind == PeerKind.FORUM and reply_to is None:
+      reply_to = peer.forum_id
     client = self.factory.session.client
     text, entities = await outgoing_mention(client, text)
     message = await client.send_message(
       peer.telegram_peer, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
     self.factory.recent[peer.id].append(RecentMessage(message.id, None, text))
-    # Without max_id Telethon marks the whole chat read, every forum topic included
-    if peer.kind == PeerKind.TOPIC:
-      await client(ReadDiscussionRequest(peer.telegram_peer, peer.topic_id, message.id))
+    # Without max_id Telethon marks the whole chat read, every forum included
+    if peer.kind == PeerKind.FORUM:
+      await client(ReadDiscussionRequest(peer.telegram_peer, peer.forum_id, message.id))
     else:
       await client.send_read_acknowledge(peer.telegram_peer, max_id=message.id)
 

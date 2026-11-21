@@ -45,7 +45,7 @@ class TelegramSession:
     # Telethon hands over entities, Peer* objects or marked ids, resolve_id splits the latter
     entity_id, peer_type = utils.resolve_id(utils.get_peer_id(peer))
     kind = {PeerUser: PeerKind.USER, PeerChat: PeerKind.CHAT, PeerChannel: PeerKind.CHANNEL}
-    key = dict(kind=kind[peer_type], entity_id=entity_id, topic_id=None)
+    key = dict(kind=kind[peer_type], entity_id=entity_id, forum_id=None)
     record = await Peer.get_or_none(**key)
     if record and not force:
       return record
@@ -84,41 +84,40 @@ class TelegramSession:
       base = username.lower()
     else:
       base = slugify(display_name, max_length=20, separator='_') or f'i{entity_id}'
-    return await create_aliased(base, Peer.exclude(kind=PeerKind.TOPIC), **key, **fields)
+    return await create_aliased(base, Peer.exclude(kind=PeerKind.FORUM), **key, **fields)
 
   async def resolve_conversation_record(self, message):
-    ''' Record of the chat a message went to, or of its forum topic. Topics other than General
-    flag their messages, General ones stay with the chat itself
+    ''' Record of the chat a message went to, or of its forum. Forums other than General flag
+    their messages, General ones stay with the chat itself
     '''
     chat = await self.resolve_peer_record(message.peer_id)
     reply_to = message.reply_to
     if not (isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic):
       return chat
 
-    return await self.resolve_topic_record(
+    return await self.resolve_forum_record(
       chat, reply_to.reply_to_top_id or reply_to.reply_to_msg_id)
 
-  async def resolve_forum_topics(self, chat):
-    ''' Topic records of a forum chat; General (id 1) is the chat itself, deleted topics are gone
-    '''
+  async def resolve_forums(self, chat):
+    ''' Forum records of a chat; General (id 1) is the chat itself, deleted forums are gone '''
     result = await self.client(GetForumTopicsRequest(
       chat.telegram_peer, offset_date=None, offset_id=0, offset_topic=0, limit=100))
-    return [await self.resolve_topic_record(chat, topic.id, topic.title)
-            for topic in result.topics
-            if topic.id != 1 and not isinstance(topic, ForumTopicDeleted)]
+    return [await self.resolve_forum_record(chat, forum.id, forum.title)
+            for forum in result.topics
+            if forum.id != 1 and not isinstance(forum, ForumTopicDeleted)]
 
-  async def resolve_topic_record(self, chat, topic_id, title=None):
-    key = dict(kind=PeerKind.TOPIC, entity_id=chat.entity_id, topic_id=topic_id)
-    if record := await Peer.filter(**key).select_related('forum').get_or_none():
+  async def resolve_forum_record(self, chat, forum_id, title=None):
+    key = dict(kind=PeerKind.FORUM, entity_id=chat.entity_id, forum_id=forum_id)
+    if record := await Peer.filter(**key).select_related('chat').get_or_none():
       return record
 
     if title is None:
-      result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [topic_id]))
+      result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [forum_id]))
       title = result.topics[0].title
-    base = slugify(title, max_length=20, separator='_') or f't{topic_id}'
-    taken = Peer.filter(kind=PeerKind.TOPIC, entity_id=chat.entity_id)
+    base = slugify(title, max_length=20, separator='_') or f'f{forum_id}'
+    taken = Peer.filter(kind=PeerKind.FORUM, entity_id=chat.entity_id)
     return await create_aliased(
-      base, taken, **key, forum=chat, first_name=title, display_name=title)
+      base, taken, **key, chat=chat, first_name=title, display_name=title)
 
   async def startup(self):
     print("Connecting...")
