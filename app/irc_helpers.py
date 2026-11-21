@@ -1,16 +1,22 @@
 import re
+from collections import namedtuple
 
 from telethon import helpers, utils
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
+from telethon.tl.functions.stories import GetStoriesByIDRequest
 from telethon.tl.types import (
   InputMessageEntityMentionName, InputPeerChannel, MessageEntityMention,
-  MessageEntityMentionName)
+  MessageEntityMentionName, MessageReplyStoryHeader)
 
 from models import Peer
 
 SERVER = 'telegram'
 LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
+RECENT_MESSAGES = 200
+QUOTE_LENGTH = 30
+
+RecentMessage = namedtuple('RecentMessage', 'id sender_id text')
 
 
 def peer_hostmask(peer):
@@ -67,6 +73,33 @@ async def incoming_mentions(session, message):
     if peer:
       text = text[:entity.offset] + peer.alias + text[entity.offset + entity.length:]
   return helpers.del_surrogate(text)
+
+
+async def render_reply(message, recent, text):
+  reply_to = message.reply_to
+  if isinstance(reply_to, MessageReplyStoryHeader):
+    result = await message.client(GetStoriesByIDRequest(reply_to.peer, [reply_to.story_id]))
+    captions = [story.caption for story in result.stories if getattr(story, 'caption', None)]
+    return '> <{}> | {}'.format(' '.join(' '.join(captions).split()), text)
+  if not message.reply_to_msg_id or reply_to.forum_topic and not reply_to.reply_to_top_id:
+    return text
+  if reply_to.quote_text:
+    return '> {}\n{}'.format(' '.join(reply_to.quote_text.split()), text)
+
+  replied = next((m for m in recent if m.id == message.reply_to_msg_id), None)
+  if replied:
+    quote = ' '.join(replied.text.split())
+  else:
+    replied_message = await message.get_reply_message()
+    if not replied_message:
+      return text
+    quote = ' '.join(replied_message.message.split())
+    if any(c.isalnum() for c in quote):
+      return f'> {quote}\n{text}'
+
+  if len(quote) > QUOTE_LENGTH:
+    quote = quote[:QUOTE_LENGTH] + '…'
+  return f'> {quote} | {text}'
 
 
 async def fetch_names(session, chat_id):

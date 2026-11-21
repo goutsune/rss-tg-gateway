@@ -1,7 +1,9 @@
 ''' IRC server side: line framing on Twisted, one active client connection
 '''
 import asyncio, inspect
+from collections import defaultdict, deque
 from datetime import datetime, timezone
+from functools import partial
 
 from telethon import events
 from telethon.errors import RPCError
@@ -14,8 +16,8 @@ from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_commands, irc_message
 from irc_helpers import (
-  SERVER, fetch_names, fetch_topic, find_peer, incoming_mentions, irc_name, iter_text_lines,
-  outgoing_mention, peer_hostmask)
+  RECENT_MESSAGES, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
+  irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_reply)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -218,7 +220,9 @@ class IRCConnection(LineOnlyReceiver):
       return
     client = self.factory.session.client
     text, entities = await outgoing_mention(client, text.removeprefix(prefix))
-    await client.send_message(peer.id, text, parse_mode=None, formatting_entities=entities)
+    message = await client.send_message(
+      peer.id, text, parse_mode=None, formatting_entities=entities)
+    self.factory.recent[peer.id].append(RecentMessage(message.id, message.sender_id, text))
     await client.send_read_acknowledge(peer.id)
 
 
@@ -229,6 +233,7 @@ class TelegramIRCFactory(ServerFactory):
     self.session = session
     self.active = None
     self.topics = {}
+    self.recent = defaultdict(partial(deque, maxlen=RECENT_MESSAGES))
     session.client.add_event_handler(
       self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
@@ -244,13 +249,21 @@ class TelegramIRCFactory(ServerFactory):
       self.topics[chat.id] = await fetch_topic(self.session.client, chat)
     return self.topics[chat.id]
 
+  async def render_message(self, message):
+    recent = self.recent[message.chat_id]
+    text = await incoming_mentions(self.session, message)
+    rendered = await render_reply(message, recent, text)
+    recent.append(RecentMessage(message.id, message.sender_id, text))
+    return rendered
+
   # #################### Telegram events
   async def on_private_message(self, event):
     peer = await self.session.resolve_peer_record(event.chat_id)
+    text = await self.render_message(event.message)
     connection = self.active
     if not connection:
       return
-    lines = (await incoming_mentions(self.session, event.message)).split('\n')
+    lines = text.split('\n')
     if not event.out:
       connection.relay(peer_hostmask(peer), connection.nick, lines, event.date)
     elif 'echo-message' in connection.caps:
@@ -262,6 +275,7 @@ class TelegramIRCFactory(ServerFactory):
   async def on_chat_message(self, event):
     chat = await self.session.resolve_peer_record(event.chat_id)
     sender = None if event.out else await self.session.resolve_peer_record(event.sender_id)
+    text = await self.render_message(event.message)
     connection = self.active
     if not connection:
       return
@@ -269,5 +283,4 @@ class TelegramIRCFactory(ServerFactory):
     if channel.lower() not in connection.channels:
       await connection.join_chat(chat)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
-    text = await incoming_mentions(self.session, event.message)
     connection.relay(prefix, channel, text.split('\n'), event.date)
