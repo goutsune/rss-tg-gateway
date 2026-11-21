@@ -3,6 +3,7 @@
 from twisted.internet.protocol import ServerFactory
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.python import log
+from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_message
 
@@ -39,10 +40,10 @@ class IRCConnection(LineOnlyReceiver):
 
     handler = getattr(self, f'irc_{command}', None)
     if handler is None:
-      self.numeric('421', command, 'Unknown command')
+      self.numeric(irc_protocol.ERR_UNKNOWNCOMMAND, command, 'Unknown command')
       return
     if not self.registered and command not in PRE_REGISTRATION:
-      self.numeric('451', 'Not registered')
+      self.numeric(irc_protocol.ERR_NOTREGISTERED, 'Not registered')
       return
 
     try:
@@ -70,15 +71,16 @@ class IRCConnection(LineOnlyReceiver):
     if self.registered or not (self.nick and self.user):
       return
     if self.password != config.irc_password:
-      self.numeric('464', 'Password incorrect')
+      self.numeric(irc_protocol.ERR_PASSWDMISMATCH, 'Password incorrect')
       self.error('Bad password')
       return
 
     self.registered = True
     self.factory.attach(self)
-    self.numeric('001', self.hostmask)
-    self.numeric('005', 'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
-    self.numeric('422', 'No MOTD')
+    self.numeric(irc_protocol.RPL_WELCOME, self.hostmask)
+    self.numeric(irc_protocol.RPL_ISUPPORT,
+                 'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
+    self.numeric(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
   # #################### IRC commands
   def irc_PASS(self, password, *_):
@@ -102,14 +104,14 @@ class IRCConnection(LineOnlyReceiver):
 
   def irc_MODE(self, target, *_):
     if target.lower() == self.nick.lower():
-      self.numeric('221', '+')
+      self.numeric(irc_protocol.RPL_UMODEIS, '+')
 
   def irc_USERHOST(self, *nicks):
     own = [f'{self.nick}=+{self.user}@{SERVER}' for n in nicks if n.lower() == self.nick.lower()]
-    self.numeric('302', ' '.join(own))
+    self.numeric(irc_protocol.RPL_USERHOST, ' '.join(own))
 
   def irc_WHO(self, mask='*', *_):
-    self.numeric('315', mask, 'End of WHO')
+    self.numeric(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
 
 class TelegramIRCFactory(ServerFactory):
