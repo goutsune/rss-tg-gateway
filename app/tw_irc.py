@@ -13,13 +13,14 @@ from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_message
 from irc_helpers import (
-  SERVER, fetch_names, fetch_topic, iter_text_lines, peer_hostmask, render_lines)
+  SERVER, fetch_names, fetch_topic, iter_text_lines, peer_hostmask)
 from models import Peer
 
 
 class IRCConnection(LineOnlyReceiver):
   delimiter = b'\n'
   MAX_LENGTH = 8192
+  CAPABILITIES = ('echo-message', 'server-time')
 
   # #################### LineOnlyReceiver / Protocol overrides
   def connectionMade(self):
@@ -27,6 +28,8 @@ class IRCConnection(LineOnlyReceiver):
     self.user = None
     self.password = None
     self.registered = False
+    self.negotiating = False
+    self.caps = set()
     self.channels = set()
 
   def connectionLost(self, reason):
@@ -49,7 +52,7 @@ class IRCConnection(LineOnlyReceiver):
     if handler is None:
       self.reply(irc_protocol.ERR_UNKNOWNCOMMAND, command, 'Unknown command')
       return
-    if not self.registered and command not in {'PASS', 'NICK', 'USER', 'PING', 'QUIT'}:
+    if not self.registered and command not in {'CAP', 'PASS', 'NICK', 'USER', 'PING', 'QUIT'}:
       self.reply(irc_protocol.ERR_NOTREGISTERED, 'Not registered')
       return
 
@@ -81,7 +84,7 @@ class IRCConnection(LineOnlyReceiver):
     self.transport.loseConnection()
 
   def register(self):
-    if self.registered or not (self.nick and self.user):
+    if self.registered or self.negotiating or not (self.nick and self.user):
       return
     if self.password != config.irc_password:
       self.reply(irc_protocol.ERR_PASSWDMISMATCH, 'Password incorrect')
@@ -104,7 +107,38 @@ class IRCConnection(LineOnlyReceiver):
       self.reply(irc_protocol.RPL_NAMREPLY, '=', channel, names_line)
     self.reply(irc_protocol.RPL_ENDOFNAMES, channel, 'End of NAMES')
 
+  def relay(self, prefix, target, lines, date):
+    tags = None
+    if 'server-time' in self.caps:
+      tags = {'time': date.strftime('%Y-%m-%dT%H:%M:%S.000Z')}
+    for line in lines:
+      self.send('PRIVMSG', target, line, prefix=prefix, tags=tags)
+
   # #################### IRC commands
+  def irc_CAP(self, subcommand, *args):
+    subcommand = subcommand.upper()
+    if subcommand in ('LS', 'REQ') and not self.registered:
+      self.negotiating = True
+
+    if subcommand == 'LS':
+      self.send('CAP', self.nick or '*', 'LS', ' '.join(self.CAPABILITIES), prefix=SERVER)
+    elif subcommand == 'LIST':
+      self.send('CAP', self.nick or '*', 'LIST', ' '.join(sorted(self.caps)), prefix=SERVER)
+    elif subcommand == 'REQ':
+      requested = args[0].split()
+      if all(cap.removeprefix('-') in self.CAPABILITIES for cap in requested):
+        for cap in requested:
+          if cap.startswith('-'):
+            self.caps.discard(cap[1:])
+          else:
+            self.caps.add(cap)
+        self.send('CAP', self.nick or '*', 'ACK', ' '.join(requested), prefix=SERVER)
+      else:
+        self.send('CAP', self.nick or '*', 'NAK', ' '.join(requested), prefix=SERVER)
+    elif subcommand == 'END':
+      self.negotiating = False
+      self.register()
+
   def irc_PASS(self, password, *_):
     self.password = password
 
@@ -152,8 +186,10 @@ class IRCConnection(LineOnlyReceiver):
       self.reply(irc_protocol.ERR_NOSUCHNICK, target, 'No such nick/channel')
       return
     client = self.factory.session.client
-    await client.send_message(peer.id, text, parse_mode=None)
+    message = await client.send_message(peer.id, text, parse_mode=None)
     await client.send_read_acknowledge(peer.id)
+    if 'echo-message' in self.caps:
+      self.relay(self.hostmask, target, [text], message.date)
 
 
 class TelegramIRCFactory(ServerFactory):
@@ -163,9 +199,9 @@ class TelegramIRCFactory(ServerFactory):
     self.session = session
     self.active = None
     session.client.add_event_handler(
-      self.on_private_message, events.NewMessage(incoming=True, func=lambda e: e.is_private))
+      self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
-      self.on_chat_message, events.NewMessage(incoming=True, func=lambda e: e.is_group))
+      self.on_chat_message, events.NewMessage(func=lambda e: e.is_group))
 
   def attach(self, connection):
     if self.active:
@@ -174,15 +210,22 @@ class TelegramIRCFactory(ServerFactory):
 
   # #################### Telegram events
   async def on_private_message(self, event):
-    sender = await self.session.resolve_peer_record(event.sender_id)
-    if not self.active:
+    peer = await self.session.resolve_peer_record(event.chat_id)
+    connection = self.active
+    if not connection:
       return
-    for line in render_lines(event.message):
-      self.active.send('PRIVMSG', self.active.nick, line, prefix=peer_hostmask(sender))
+    lines = event.raw_text.split('\n')
+    if not event.out:
+      connection.relay(peer_hostmask(peer), connection.nick, lines, event.date)
+    elif 'echo-message' in connection.caps:
+      connection.relay(connection.hostmask, peer.alias, lines, event.date)
+    else:
+      connection.relay(
+        peer_hostmask(peer), connection.nick, [f'*me: {line}' for line in lines], event.date)
 
   async def on_chat_message(self, event):
     chat = await self.session.resolve_peer_record(event.chat_id)
-    sender = await self.session.resolve_peer_record(event.sender_id)
+    sender = None if event.out else await self.session.resolve_peer_record(event.sender_id)
     connection = self.active
     if not connection:
       return
@@ -195,5 +238,5 @@ class TelegramIRCFactory(ServerFactory):
         connection.send('NOTICE', connection.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
         names = []
       connection.join(channel, topic, names)
-    for line in render_lines(event.message):
-      connection.send('PRIVMSG', channel, line, prefix=peer_hostmask(sender))
+    prefix = connection.hostmask if event.out else peer_hostmask(sender)
+    connection.relay(prefix, channel, event.raw_text.split('\n'), event.date)
