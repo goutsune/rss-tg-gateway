@@ -4,11 +4,24 @@ between display names, aliases and Peer objects.
 from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest
 from telethon.tl.types import Channel, Chat, PeerChannel, PeerChat, PeerUser, User
-from tortoise.exceptions import IntegrityError
 
 import config
 from models import Peer, PeerKind
+
+
+async def create_aliased(base, taken, **fields):
+  ''' Create a Peer aliased base, or base2, base3... while the taken queryset already has that
+  alias in any case. A leading digit gets an underscore in front, IRC names can't start with one
+  '''
+  if base[:1].isdigit():
+    base = f'_{base}'
+  alias, suffix = base, 1
+  while await taken.filter(alias__iexact=alias).exists():
+    suffix += 1
+    alias = f'{base}{suffix}'
+  return await Peer.create(alias=alias, **fields)
 
 
 class TelegramSession:
@@ -66,20 +79,23 @@ class TelegramSession:
       await record.update_from_dict(fields).save()
       return record
 
-    slug = slugify(display_name, max_length=20, separator='_')
     if username:
       base = username.lower()
-    elif slug[:1].isdigit():
-      base = f'_{slug}'
     else:
-      base = slug or f'i{key["entity_id"]}'
-    alias, suffix = base, 1
-    while True:
-      try:
-        return await Peer.create(alias=alias, **key, **fields)
-      except IntegrityError:
-        suffix += 1
-        alias = f'{base}{suffix}'
+      base = slugify(display_name, max_length=20, separator='_') or f'i{entity_id}'
+    return await create_aliased(base, Peer.exclude(kind=PeerKind.TOPIC), **key, **fields)
+
+  async def resolve_topic_record(self, chat, topic_id):
+    key = dict(kind=PeerKind.TOPIC, entity_id=chat.entity_id, topic_id=topic_id)
+    if record := await Peer.filter(**key).select_related('forum').get_or_none():
+      return record
+
+    result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [topic_id]))
+    title = result.topics[0].title
+    base = slugify(title, max_length=20, separator='_') or f't{topic_id}'
+    taken = Peer.filter(kind=PeerKind.TOPIC, entity_id=chat.entity_id)
+    return await create_aliased(
+      base, taken, **key, forum=chat, first_name=title, display_name=title)
 
   async def startup(self):
     print("Connecting...")

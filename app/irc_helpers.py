@@ -34,14 +34,23 @@ def peer_hostmask(peer):
 
 
 def irc_name(peer):
-  return peer.alias if peer.kind == PeerKind.USER else f'#{peer.alias}'
+  if peer.kind == PeerKind.USER:
+    return peer.alias
+  if peer.kind == PeerKind.TOPIC:
+    return f'#{peer.forum.alias}/{peer.alias}'
+  return f'#{peer.alias}'
 
 
 async def find_peer(name):
-  if name.startswith('#'):
-    return await Peer.get_or_none(
-      alias__iexact=name[1:], kind__in=(PeerKind.CHAT, PeerKind.CHANNEL))
-  return await Peer.get_or_none(alias__iexact=name, kind=PeerKind.USER)
+  if not name.startswith('#'):
+    return await Peer.get_or_none(alias__iexact=name, kind=PeerKind.USER)
+  chat_alias, _, topic_alias = name[1:].partition('/')
+  if topic_alias:
+    topics = Peer.filter(
+      kind=PeerKind.TOPIC, alias__iexact=topic_alias, forum__alias__iexact=chat_alias)
+    return await topics.select_related('forum').get_or_none()
+  return await Peer.get_or_none(
+    alias__iexact=chat_alias, kind__in=(PeerKind.CHAT, PeerKind.CHANNEL))
 
 
 async def fetch_topic(client, chat):

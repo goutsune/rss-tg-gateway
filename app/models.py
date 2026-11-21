@@ -18,21 +18,24 @@ class PeerKind(Enum):
 
 class Peer(Model):
   ''' Anything with an alias: users, chats, channels and forum topics. entity_id is the bare
-  Telegram id, of the forum channel for topics, topic_id is set for topics only
+  Telegram id, of the forum channel for topics; topic_id and forum are set for topics only
   '''
   id = fields.IntField(primary_key=True)
   kind = fields.CharEnumField(PeerKind)
   entity_id = fields.BigIntField()
   topic_id = fields.IntField(null=True)
+  forum = fields.ForeignKeyField('models.Peer', null=True, related_name='topics')
   first_name = fields.TextField(null=True)
   last_name = fields.TextField(null=True)
   username = fields.TextField(null=True)
   display_name = fields.TextField()
-  alias = fields.CharField(max_length=32, unique=True)
+  alias = fields.CharField(max_length=32)
   updated_at = fields.DatetimeField(auto_now=True)
 
   class Meta:
-    unique_together = (('kind', 'entity_id', 'topic_id'),)
+    # Second pair only bites for topics: aliases unique per forum. Users, chats and channels
+    # share one alias namespace, checked in tg_session.create_aliased
+    unique_together = (('kind', 'entity_id', 'topic_id'), ('kind', 'entity_id', 'alias'))
 
   @property
   def telegram_peer(self):

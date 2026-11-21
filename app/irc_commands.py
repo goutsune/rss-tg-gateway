@@ -83,11 +83,22 @@ async def cmd_alias(connection, context, rest):
   if not VALID_ALIAS.fullmatch(new):
     notice(connection, context, f'Invalid alias {new}')
     return
-  if await Peer.filter(alias__iexact=new).exclude(id=peer.id).exists():
+  if peer.kind == PeerKind.TOPIC:
+    is_taken = Peer.filter(kind=PeerKind.TOPIC, forum_id=peer.forum_id)
+  else:
+    is_taken = Peer.exclude(kind=PeerKind.TOPIC)
+  if await is_taken.exclude(id=peer.id).filter(alias__iexact=new).exists():
     notice(connection, context, f'Alias {new} is taken')
     return
 
-  old_name = irc_name(peer)
+  # A forum's topic channels carry its alias too, they get rejoined along with it
+  conversations = [peer]
+  if peer.kind in (PeerKind.CHAT, PeerKind.CHANNEL):
+    topics = await Peer.filter(kind=PeerKind.TOPIC, forum=peer)
+    for topic in topics:
+      topic.forum = peer
+    conversations += topics
+  old_names = [irc_name(conversation) for conversation in conversations]
   old_hostmask = peer_hostmask(peer)
   peer.alias = new
   await peer.save()
@@ -95,16 +106,18 @@ async def cmd_alias(connection, context, rest):
   is_user = peer.kind == PeerKind.USER
   if is_user:
     connection.send('NICK', new, prefix=old_hostmask)
-  elif old_name.lower() in connection.channels:
-    connection.part(old_name)
-    await connection.join_chat(peer)
-  notice(connection, context if is_user else peer, f'{old_name} is now {irc_name(peer)}')
+  for conversation, old_name in zip(conversations, old_names):
+    if old_name.lower() in connection.channels:
+      connection.part(old_name)
+      await connection.join_chat(conversation)
+  notice(connection, context if is_user else peer, f'{old_names[0]} is now {irc_name(peer)}')
 
 
 async def cmd_aliases(connection, context, rest):
   text = rest.strip()
   peers = await Peer.filter(
-    Q(alias__icontains=text) | Q(display_name__icontains=text)).order_by('alias')
+    Q(alias__icontains=text) | Q(display_name__icontains=text)
+  ).select_related('forum').order_by('alias')
   for peer in peers:
     notice(connection, context, f'{irc_name(peer)} ({peer.kind.value}): {peer.display_name}')
 

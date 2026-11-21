@@ -7,6 +7,7 @@ from functools import partial
 
 from telethon import events
 from telethon.errors import RPCError
+from telethon.tl.types import MessageReplyHeader
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
 from twisted.protocols.basic import LineOnlyReceiver
@@ -15,6 +16,7 @@ from twisted.python.failure import Failure
 from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_commands, irc_message
+from models import PeerKind
 from irc_helpers import (
   RECENT_MESSAGES, Autojoin, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
   format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
@@ -105,9 +107,14 @@ class IRCConnection(LineOnlyReceiver):
                'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
     self.reply(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
-  async def join_chat(self, chat):
-    channel = irc_name(chat)
-    topic = await self.factory.chat_topic(chat)
+  async def join_chat(self, conversation):
+    channel = irc_name(conversation)
+    if conversation.kind == PeerKind.TOPIC:
+      chat = conversation.forum
+      topic = f'{conversation.display_name} // {await self.factory.chat_topic(chat)}'
+    else:
+      chat = conversation
+      topic = await self.factory.chat_topic(chat)
     try:
       names = await fetch_names(self.factory.session, chat)
     except RPCError as e:
@@ -253,6 +260,8 @@ class IRCConnection(LineOnlyReceiver):
     await self.send_to_telegram(peer, text.removeprefix(prefix))
 
   async def send_to_telegram(self, peer, text, reply_to=None):
+    if peer.kind == PeerKind.TOPIC and reply_to is None:
+      reply_to = peer.topic_id
     client = self.factory.session.client
     text, entities = await outgoing_mention(client, text)
     message = await client.send_message(
@@ -310,15 +319,22 @@ class TelegramIRCFactory(ServerFactory):
   async def on_chat_message(self, event):
     chat = await self.session.resolve_peer_record(event.message.peer_id)
     sender = None if event.out else await self.session.resolve_peer_record(event.message.from_id)
-    text = await self.render_message(event.message, chat, sender)
+    # Forum topics other than General flag their messages; General stays in the chat channel
+    reply_to = event.message.reply_to
+    forum_topic = None
+    if isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic:
+      topic_id = reply_to.reply_to_top_id or reply_to.reply_to_msg_id
+      forum_topic = await self.session.resolve_topic_record(chat, topic_id)
+    conversation = forum_topic or chat
+    text = await self.render_message(event.message, conversation, sender)
     connection = self.active
     if not connection:
       return
-    channel = irc_name(chat)
+    channel = irc_name(conversation)
     if channel.lower() not in connection.channels:
       if channel.lower() in connection.parted or self.autojoin == Autojoin.NEVER or \
           self.autojoin == Autojoin.MENTIONS and not event.mentioned:
         return
-      await connection.join_chat(chat)
+      await connection.join_chat(conversation)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
     connection.relay(prefix, channel, text, event.date)
