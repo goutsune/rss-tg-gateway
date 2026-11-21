@@ -253,10 +253,15 @@ class IRCConnection(LineOnlyReceiver):
     session = self.factory.session
     async for dialog in session.client.iter_dialogs():
       peer = await session.resolve_peer_record(dialog.entity)
-      if dialog.is_group:
-        size = getattr(dialog.entity, 'participants_count', None) or 0
-        topic = await self.factory.chat_topic(peer)
-        self.reply(irc_protocol.RPL_LIST, irc_name(peer), size, topic)
+      if not dialog.is_group:
+        continue
+      size = getattr(dialog.entity, 'participants_count', None) or 0
+      topic = await self.factory.chat_topic(peer)
+      self.reply(irc_protocol.RPL_LIST, irc_name(peer), size, topic)
+      if getattr(dialog.entity, 'forum', False):
+        for forum_topic in await session.resolve_forum_topics(peer):
+          self.reply(irc_protocol.RPL_LIST, irc_name(forum_topic), size,
+                     f'{forum_topic.display_name} // {topic}')
     self.reply(irc_protocol.RPL_LISTEND, 'End of LIST')
 
   async def irc_PRIVMSG(self, target, text):

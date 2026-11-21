@@ -29,6 +29,7 @@ HELP = [
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
   'h [n]: messages here you have not read yet, or the last n',
+  'forums [#chat]: topic channels of a forum chat, the current one by default',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
   '',
   'Writing longer messages:',
@@ -206,6 +207,24 @@ async def cmd_idjoin(connection, context, rest):
   notice(connection, context, f'No known chat with id {number}')
 
 
+async def cmd_forums(connection, context, rest):
+  names = rest.split()
+  chat = await find_peer(names[0]) if names else context
+  if not chat:
+    notice(connection, context, f'No such channel {names[0]}')
+    return
+  if chat.kind == PeerKind.TOPIC:
+    chat = chat.forum
+
+  session = connection.factory.session
+  entity = await session.client.get_entity(chat.telegram_peer)
+  if not getattr(entity, 'forum', False):
+    notice(connection, context, f'{irc_name(chat)} has no topics')
+    return
+  for topic in await session.resolve_forum_topics(chat):
+    notice(connection, context, f'{irc_name(topic)}: {topic.display_name}')
+
+
 async def cmd_history(connection, context, rest):
   client = connection.factory.session.client
   is_topic = context.kind == PeerKind.TOPIC
@@ -263,4 +282,5 @@ COMMANDS = {
   'R': cmd_reply_search,
   'r': cmd_reply_latest,
   'h': cmd_history,
+  'forums': cmd_forums,
 }

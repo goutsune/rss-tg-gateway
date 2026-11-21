@@ -4,9 +4,9 @@ between display names, aliases and Peer objects.
 from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
-from telethon.tl.functions.messages import GetForumTopicsByIDRequest
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest, GetForumTopicsRequest
 from telethon.tl.types import (
-  Channel, Chat, MessageReplyHeader, PeerChannel, PeerChat, PeerUser, User)
+  Channel, Chat, ForumTopicDeleted, MessageReplyHeader, PeerChannel, PeerChat, PeerUser, User)
 
 import config
 from models import Peer, PeerKind
@@ -95,13 +95,26 @@ class TelegramSession:
     if not (isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic):
       return chat
 
-    topic_id = reply_to.reply_to_top_id or reply_to.reply_to_msg_id
+    return await self.resolve_topic_record(
+      chat, reply_to.reply_to_top_id or reply_to.reply_to_msg_id)
+
+  async def resolve_forum_topics(self, chat):
+    ''' Topic records of a forum chat; General (id 1) is the chat itself, deleted topics are gone
+    '''
+    result = await self.client(GetForumTopicsRequest(
+      chat.telegram_peer, offset_date=None, offset_id=0, offset_topic=0, limit=100))
+    return [await self.resolve_topic_record(chat, topic.id, topic.title)
+            for topic in result.topics
+            if topic.id != 1 and not isinstance(topic, ForumTopicDeleted)]
+
+  async def resolve_topic_record(self, chat, topic_id, title=None):
     key = dict(kind=PeerKind.TOPIC, entity_id=chat.entity_id, topic_id=topic_id)
     if record := await Peer.filter(**key).select_related('forum').get_or_none():
       return record
 
-    result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [topic_id]))
-    title = result.topics[0].title
+    if title is None:
+      result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [topic_id]))
+      title = result.topics[0].title
     base = slugify(title, max_length=20, separator='_') or f't{topic_id}'
     taken = Peer.filter(kind=PeerKind.TOPIC, entity_id=chat.entity_id)
     return await create_aliased(
