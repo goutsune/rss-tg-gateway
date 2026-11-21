@@ -7,6 +7,7 @@ from functools import partial
 
 from telethon import events
 from telethon.errors import RPCError
+from telethon.tl.functions.messages import ReadDiscussionRequest
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
 from twisted.protocols.basic import LineOnlyReceiver
@@ -139,6 +140,20 @@ class IRCConnection(LineOnlyReceiver):
     rem_lines = 510 - len(f':{prefix} PRIVMSG {target} :'.encode())
     for line in format_multiline_msg(text, rem_lines):
       self.send('PRIVMSG', target, line, prefix=prefix, tags=tags)
+
+  def relay_message(self, conversation, sender, text, date):
+    ''' Relay a Telegram message into its query or channel; sender is None for own messages,
+    which a query can only show with echo-message, otherwise as *me: from the peer
+    '''
+    if conversation.kind != PeerKind.USER:
+      prefix = peer_hostmask(sender) if sender else self.hostmask
+      self.relay(prefix, irc_name(conversation), text, date)
+    elif sender:
+      self.relay(peer_hostmask(sender), self.nick, text, date)
+    elif 'echo-message' in self.caps:
+      self.relay(self.hostmask, conversation.alias, text, date)
+    else:
+      self.relay(peer_hostmask(conversation), self.nick, f'*me: {text}', date)
 
   # #################### IRC commands
   def irc_CAP(self, subcommand, *args):
@@ -284,7 +299,11 @@ class IRCConnection(LineOnlyReceiver):
     message = await client.send_message(
       peer.telegram_peer, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
     self.factory.recent[peer.id].append(RecentMessage(message.id, None, text))
-    await client.send_read_acknowledge(peer.telegram_peer)
+    # Without max_id Telethon marks the whole chat read, every forum topic included
+    if peer.kind == PeerKind.TOPIC:
+      await client(ReadDiscussionRequest(peer.telegram_peer, peer.topic_id, message.id))
+    else:
+      await client.send_read_acknowledge(peer.telegram_peer, max_id=message.id)
 
 
 class TelegramIRCFactory(ServerFactory):
@@ -322,22 +341,16 @@ class TelegramIRCFactory(ServerFactory):
     rendered = await render_reply(message, recent, render_link_preview(message, rendered))
     recent.append(RecentMessage(message.id, sender and sender.id, text))
     if sender:
-      self.last_seen[sender.id] = message.date
+      self.last_seen[sender.id] = max(message.date, self.last_seen.get(sender.id, message.date))
     return rendered
 
   # #################### Telegram events
   async def on_private_message(self, event):
     peer = await self.session.resolve_peer_record(event.message.peer_id)
-    text = await self.render_message(event.message, peer, None if event.out else peer)
-    connection = self.active
-    if not connection:
-      return
-    if not event.out:
-      connection.relay(peer_hostmask(peer), connection.nick, text, event.date)
-    elif 'echo-message' in connection.caps:
-      connection.relay(connection.hostmask, peer.alias, text, event.date)
-    else:
-      connection.relay(peer_hostmask(peer), connection.nick, f'*me: {text}', event.date)
+    sender = None if event.out else peer
+    text = await self.render_message(event.message, peer, sender)
+    if self.active:
+      self.active.relay_message(peer, sender, text, event.date)
 
   async def on_chat_message(self, event):
     conversation = await self.session.resolve_conversation_record(event.message)
@@ -352,8 +365,7 @@ class TelegramIRCFactory(ServerFactory):
           self.autojoin == Autojoin.MENTIONS and not event.mentioned:
         return
       await connection.join_chat(conversation)
-    prefix = connection.hostmask if event.out else peer_hostmask(sender)
-    connection.relay(prefix, channel, text, event.date)
+    connection.relay_message(conversation, sender, text, event.date)
 
   async def on_edit(self, event):
     conversation = await self.session.resolve_conversation_record(event.message)

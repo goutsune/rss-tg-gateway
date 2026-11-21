@@ -3,7 +3,9 @@
 import re
 
 from slugify import slugify
-from telethon.tl.types import PeerChannel, PeerChat
+from telethon.tl.functions.messages import GetForumTopicsByIDRequest, GetPeerDialogsRequest
+from telethon.tl.types import (
+  InputDialogPeer, Message, MessageReplyHeader, PeerChannel, PeerChat)
 from tortoise.expressions import Q
 
 from irc_helpers import SERVER, Autojoin, find_peer, irc_name, peer_hostmask
@@ -26,6 +28,7 @@ HELP = [
   'idjoin <id>: join a chat by the id or t.me/c/ link copied from Telegram',
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
+  'h [n]: messages here you have not read yet, or the last n',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
   '',
   'Writing longer messages:',
@@ -203,6 +206,52 @@ async def cmd_idjoin(connection, context, rest):
   notice(connection, context, f'No known chat with id {number}')
 
 
+async def cmd_history(connection, context, rest):
+  client = connection.factory.session.client
+  is_topic = context.kind == PeerKind.TOPIC
+  if rest.strip():
+    limit, min_id = int(rest), 0
+  elif is_topic:
+    result = await client(GetForumTopicsByIDRequest(context.telegram_peer, [context.topic_id]))
+    limit, min_id = None, result.topics[0].read_inbox_max_id
+  else:
+    dialog_peer = InputDialogPeer(await client.get_input_entity(context.telegram_peer))
+    result = await client(GetPeerDialogsRequest([dialog_peer]))
+    limit, min_id = None, result.dialogs[0].read_inbox_max_id
+
+  messages = await client.get_messages(
+    context.telegram_peer, limit=limit, min_id=min_id, reply_to=context.topic_id)
+  shown, last_date = 0, None
+  for message in reversed(messages):
+    # A forum's own channel is its General topic, the other topics' messages are left out
+    reply_to = message.reply_to
+    in_topic = isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic
+    if not isinstance(message, Message) or in_topic and not is_topic:
+      continue
+    sender = None
+    if not message.out:
+      sender = await connection.factory.session.resolve_peer_record(
+        message.from_id or message.peer_id)
+    text = await connection.factory.render_message(message, context, sender)
+
+    # Without server-time the date goes on the first line and wherever it changes
+    if 'server-time' not in connection.caps:
+      local = message.date.astimezone()
+      stamp = '%H:%M:%S' if local.date() == last_date else '%Y-%m-%d %H:%M:%S'
+      last_date = local.date()
+      text = f'{local.strftime(stamp)} {text}'
+    connection.relay_message(context, sender, text, message.date)
+    shown += 1
+
+  # History lands behind newer buffered messages, put the buffer back in message order
+  recent = connection.factory.recent[context.id]
+  ordered = sorted({m.id: m for m in recent}.values(), key=lambda m: m.id)
+  recent.clear()
+  recent.extend(ordered)
+  if not shown:
+    notice(connection, context, 'Nothing unread' if limit is None else 'No messages')
+
+
 COMMANDS = {
   'help': cmd_help,
   'alias': cmd_alias,
@@ -213,4 +262,5 @@ COMMANDS = {
   'idjoin': cmd_idjoin,
   'R': cmd_reply_search,
   'r': cmd_reply_latest,
+  'h': cmd_history,
 }
