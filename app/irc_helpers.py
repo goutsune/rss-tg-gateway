@@ -1,10 +1,16 @@
+import re
+
+from telethon import helpers, utils
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
-from telethon.tl.types import InputPeerChannel
+from telethon.tl.types import (
+  InputMessageEntityMentionName, InputPeerChannel, MessageEntityMention,
+  MessageEntityMentionName)
 
 from models import Peer
 
 SERVER = 'telegram'
+LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
 
 
 def peer_hostmask(peer):
@@ -29,6 +35,38 @@ async def fetch_topic(client, chat):
     full = await client(GetFullChatRequest(input_chat.chat_id))
   description = ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
   return f'{chat.display_name} // {description}' if description else chat.display_name
+
+
+async def outgoing_mention(client, text):
+  match = LEADING_MENTION.match(text)
+  if not match:
+    return text, None
+  rest = text[match.end(2):]
+  if match[2] == '::':
+    return f'{match[1]}:{rest}', None
+  peer = await find_peer(match[1])
+  if not peer:
+    return text, None
+
+  name = ' '.join(filter(None, (peer.first_name, peer.last_name)))
+  user = utils.get_input_user(await client.get_input_entity(peer.id))
+  mention = InputMessageEntityMentionName(0, len(name.encode('utf-16-le')) // 2, user)
+  return f'{name}:{rest}', [mention]
+
+
+async def incoming_mentions(session, message):
+  text = helpers.add_surrogate(message.message)
+  for entity in reversed(message.entities or []):
+    if isinstance(entity, MessageEntityMentionName):
+      peer = await session.resolve_peer_record(entity.user_id)
+    elif isinstance(entity, MessageEntityMention):
+      username = text[entity.offset + 1:entity.offset + entity.length]
+      peer = await Peer.get_or_none(username__iexact=username)
+    else:
+      continue
+    if peer:
+      text = text[:entity.offset] + peer.alias + text[entity.offset + entity.length:]
+  return helpers.del_surrogate(text)
 
 
 async def fetch_names(session, chat_id):

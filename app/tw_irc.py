@@ -14,7 +14,8 @@ from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_commands, irc_message
 from irc_helpers import (
-  SERVER, fetch_names, fetch_topic, find_peer, irc_name, iter_text_lines, peer_hostmask)
+  SERVER, fetch_names, fetch_topic, find_peer, incoming_mentions, irc_name, iter_text_lines,
+  outgoing_mention, peer_hostmask)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -216,7 +217,8 @@ class IRCConnection(LineOnlyReceiver):
       await irc_commands.run(self, peer, text.removeprefix(prefix))
       return
     client = self.factory.session.client
-    await client.send_message(peer.id, text.removeprefix(prefix), parse_mode=None)
+    text, entities = await outgoing_mention(client, text.removeprefix(prefix))
+    await client.send_message(peer.id, text, parse_mode=None, formatting_entities=entities)
     await client.send_read_acknowledge(peer.id)
 
 
@@ -248,7 +250,7 @@ class TelegramIRCFactory(ServerFactory):
     connection = self.active
     if not connection:
       return
-    lines = event.raw_text.split('\n')
+    lines = (await incoming_mentions(self.session, event.message)).split('\n')
     if not event.out:
       connection.relay(peer_hostmask(peer), connection.nick, lines, event.date)
     elif 'echo-message' in connection.caps:
@@ -267,4 +269,5 @@ class TelegramIRCFactory(ServerFactory):
     if channel.lower() not in connection.channels:
       await connection.join_chat(chat)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
-    connection.relay(prefix, channel, event.raw_text.split('\n'), event.date)
+    text = await incoming_mentions(self.session, event.message)
+    connection.relay(prefix, channel, text.split('\n'), event.date)
