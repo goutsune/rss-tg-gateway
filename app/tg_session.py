@@ -4,11 +4,11 @@ between display names, aliases and Peer objects.
 from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
-from telethon.tl.types import Channel, Chat, User
+from telethon.tl.types import Channel, Chat, PeerChannel, PeerChat, PeerUser, User
 from tortoise.exceptions import IntegrityError
 
 import config
-from models import Peer
+from models import Peer, PeerKind
 
 
 class TelegramSession:
@@ -28,8 +28,11 @@ class TelegramSession:
     return record and record.display_name
 
   async def resolve_peer_record(self, peer, force=False):
-    peer_id = utils.get_peer_id(peer)
-    record = await Peer.get_or_none(id=peer_id)
+    # Telethon hands over entities, Peer* objects or marked ids, resolve_id splits the latter
+    entity_id, peer_type = utils.resolve_id(utils.get_peer_id(peer))
+    kind = {PeerUser: PeerKind.USER, PeerChat: PeerKind.CHAT, PeerChannel: PeerKind.CHANNEL}
+    key = dict(kind=kind[peer_type], entity_id=entity_id, topic_id=None)
+    record = await Peer.get_or_none(**key)
     if record and not force:
       return record
 
@@ -69,11 +72,11 @@ class TelegramSession:
     elif slug[:1].isdigit():
       base = f'_{slug}'
     else:
-      base = slug or f'i{abs(peer_id)}'
+      base = slug or f'i{key["entity_id"]}'
     alias, suffix = base, 1
     while True:
       try:
-        return await Peer.create(id=peer_id, alias=alias, **fields)
+        return await Peer.create(alias=alias, **key, **fields)
       except IntegrityError:
         suffix += 1
         alias = f'{base}{suffix}'

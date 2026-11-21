@@ -8,11 +8,11 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.functions.stories import GetStoriesByIDRequest
 from telethon.tl.types import (
-  InputMessageEntityMentionName, InputPeerChannel, MessageEntityMention,
-  MessageEntityMentionName, MessageReplyStoryHeader)
+  InputMessageEntityMentionName, MessageEntityMention, MessageEntityMentionName,
+  MessageReplyStoryHeader, PeerUser)
 
 import config
-from models import Peer
+from models import Peer, PeerKind
 from util import to_alpha
 
 SERVER = 'telegram'
@@ -30,25 +30,25 @@ class Autojoin(Enum):
 
 
 def peer_hostmask(peer):
-  return f'{peer.alias}!{peer.id}@{SERVER}'
+  return f'{peer.alias}!{peer.entity_id}@{SERVER}'
 
 
 def irc_name(peer):
-  return f'#{peer.alias}' if peer.id < 0 else peer.alias
+  return peer.alias if peer.kind == PeerKind.USER else f'#{peer.alias}'
 
 
 async def find_peer(name):
   if name.startswith('#'):
-    return await Peer.get_or_none(alias__iexact=name[1:], id__lt=0)
-  return await Peer.get_or_none(alias__iexact=name, id__gt=0)
+    return await Peer.get_or_none(
+      alias__iexact=name[1:], kind__in=(PeerKind.CHAT, PeerKind.CHANNEL))
+  return await Peer.get_or_none(alias__iexact=name, kind=PeerKind.USER)
 
 
 async def fetch_topic(client, chat):
-  input_chat = await client.get_input_entity(chat.id)
-  if isinstance(input_chat, InputPeerChannel):
-    full = await client(GetFullChannelRequest(input_chat))
+  if chat.kind == PeerKind.CHANNEL:
+    full = await client(GetFullChannelRequest(chat.telegram_peer))
   else:
-    full = await client(GetFullChatRequest(input_chat.chat_id))
+    full = await client(GetFullChatRequest(chat.entity_id))
   description = ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
   return f'{chat.display_name} // {description}' if description else chat.display_name
 
@@ -65,7 +65,7 @@ async def outgoing_mention(client, text):
     return text, None
 
   name = ' '.join(filter(None, (peer.first_name, peer.last_name)))
-  user = utils.get_input_user(await client.get_input_entity(peer.id))
+  user = utils.get_input_user(await client.get_input_entity(peer.telegram_peer))
   mention = InputMessageEntityMentionName(0, len(name.encode('utf-16-le')) // 2, user)
   return f'{name}:{rest}', [mention]
 
@@ -74,7 +74,7 @@ async def incoming_mentions(session, message):
   text = helpers.add_surrogate(message.message)
   for entity in reversed(message.entities or []):
     if isinstance(entity, MessageEntityMentionName):
-      peer = await session.resolve_peer_record(entity.user_id)
+      peer = await session.resolve_peer_record(PeerUser(entity.user_id))
     elif isinstance(entity, MessageEntityMention):
       username = text[entity.offset + 1:entity.offset + entity.length]
       peer = await Peer.get_or_none(username__iexact=username)
@@ -99,16 +99,15 @@ def render_media(message, text):
   return f'{text} {link}' if text else link
 
 
-async def render_forward(message, text):
+async def render_forward(session, message, text):
   forward = message.forward
   if not forward:
     return text
-  peer = forward.from_id and await Peer.get_or_none(id=utils.get_peer_id(forward.from_id))
-  if peer:
-    name = peer.alias
+  entity = forward.sender or forward.chat
+  if entity:
+    name = (await session.resolve_peer_record(entity)).alias
   else:
-    entity = forward.sender or forward.chat
-    name = slugify(utils.get_display_name(entity) if entity else forward.from_name, separator='_')
+    name = slugify(forward.from_name, separator='_')
   return f'(F: {name}) {text}'
 
 
@@ -140,8 +139,8 @@ async def render_reply(message, recent, text):
   return f'> {quote} | {text}'
 
 
-async def fetch_names(session, chat_id):
-  members = await session.client.get_participants(chat_id)
+async def fetch_names(session, chat):
+  members = await session.client.get_participants(chat.telegram_peer)
   return [(await session.resolve_peer_record(user)).alias for user in members if not user.is_self]
 
 

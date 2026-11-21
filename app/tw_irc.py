@@ -109,7 +109,7 @@ class IRCConnection(LineOnlyReceiver):
     channel = irc_name(chat)
     topic = await self.factory.chat_topic(chat)
     try:
-      names = await fetch_names(self.factory.session, chat.id)
+      names = await fetch_names(self.factory.session, chat)
     except RPCError as e:
       self.send('NOTICE', self.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
       names = []
@@ -256,9 +256,9 @@ class IRCConnection(LineOnlyReceiver):
     client = self.factory.session.client
     text, entities = await outgoing_mention(client, text)
     message = await client.send_message(
-      peer.id, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
-    self.factory.recent[peer.id].append(RecentMessage(message.id, message.sender_id, text))
-    await client.send_read_acknowledge(peer.id)
+      peer.telegram_peer, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
+    self.factory.recent[peer.id].append(RecentMessage(message.id, None, text))
+    await client.send_read_acknowledge(peer.telegram_peer)
 
 
 class TelegramIRCFactory(ServerFactory):
@@ -285,18 +285,18 @@ class TelegramIRCFactory(ServerFactory):
       self.topics[chat.id] = await fetch_topic(self.session.client, chat)
     return self.topics[chat.id]
 
-  async def render_message(self, message):
-    recent = self.recent[message.chat_id]
+  async def render_message(self, message, chat, sender):
+    recent = self.recent[chat.id]
     text = await incoming_mentions(self.session, message)
-    rendered = render_media(message, await render_forward(message, text))
+    rendered = render_media(message, await render_forward(self.session, message, text))
     rendered = await render_reply(message, recent, rendered)
-    recent.append(RecentMessage(message.id, message.sender_id, text))
+    recent.append(RecentMessage(message.id, sender and sender.id, text))
     return rendered
 
   # #################### Telegram events
   async def on_private_message(self, event):
-    peer = await self.session.resolve_peer_record(event.chat_id)
-    text = await self.render_message(event.message)
+    peer = await self.session.resolve_peer_record(event.message.peer_id)
+    text = await self.render_message(event.message, peer, None if event.out else peer)
     connection = self.active
     if not connection:
       return
@@ -308,9 +308,9 @@ class TelegramIRCFactory(ServerFactory):
       connection.relay(peer_hostmask(peer), connection.nick, f'*me: {text}', event.date)
 
   async def on_chat_message(self, event):
-    chat = await self.session.resolve_peer_record(event.chat_id)
-    sender = None if event.out else await self.session.resolve_peer_record(event.sender_id)
-    text = await self.render_message(event.message)
+    chat = await self.session.resolve_peer_record(event.message.peer_id)
+    sender = None if event.out else await self.session.resolve_peer_record(event.message.from_id)
+    text = await self.render_message(event.message, chat, sender)
     connection = self.active
     if not connection:
       return

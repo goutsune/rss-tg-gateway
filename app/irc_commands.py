@@ -3,12 +3,11 @@
 import re
 
 from slugify import slugify
-from telethon import utils
 from telethon.tl.types import PeerChannel, PeerChat
 from tortoise.expressions import Q
 
-from irc_helpers import SERVER, Autojoin, find_peer, irc_name
-from models import Peer
+from irc_helpers import SERVER, Autojoin, find_peer, irc_name, peer_hostmask
+from models import Peer, PeerKind
 
 SERVICE = 'TelegramServ'
 SERVICE_HOSTMASK = f'{SERVICE}!service@{SERVER}'
@@ -47,7 +46,7 @@ HELP = [
 
 
 def notice(connection, context, text):
-  target = irc_name(context) if context and context.id < 0 else connection.nick
+  target = irc_name(context) if context and context.kind != PeerKind.USER else connection.nick
   connection.send('NOTICE', target, text, prefix=SERVICE_HOSTMASK)
 
 
@@ -89,16 +88,17 @@ async def cmd_alias(connection, context, rest):
     return
 
   old_name = irc_name(peer)
-  old_hostmask = f'{peer.alias}!{peer.id}@{SERVER}'
+  old_hostmask = peer_hostmask(peer)
   peer.alias = new
   await peer.save()
 
-  if peer.id > 0:
+  is_user = peer.kind == PeerKind.USER
+  if is_user:
     connection.send('NICK', new, prefix=old_hostmask)
   elif old_name.lower() in connection.channels:
     connection.part(old_name)
     await connection.join_chat(peer)
-  notice(connection, peer if peer.id < 0 else context, f'{old_name} is now {irc_name(peer)}')
+  notice(connection, context if is_user else peer, f'{old_name} is now {irc_name(peer)}')
 
 
 async def cmd_aliases(connection, context, rest):
@@ -106,8 +106,7 @@ async def cmd_aliases(connection, context, rest):
   peers = await Peer.filter(
     Q(alias__icontains=text) | Q(display_name__icontains=text)).order_by('alias')
   for peer in peers:
-    peer_type = utils.resolve_id(peer.id)[1].__name__
-    notice(connection, context, f'{irc_name(peer)} ({peer_type}): {peer.display_name}')
+    notice(connection, context, f'{irc_name(peer)} ({peer.kind.value}): {peer.display_name}')
 
 
 async def cmd_whois(connection, context, rest):
@@ -116,9 +115,8 @@ async def cmd_whois(connection, context, rest):
   if not peer:
     notice(connection, context, f'No such nick/channel {names[0]}')
     return
-  peer_type = utils.resolve_id(peer.id)[1].__name__
-  notice(connection, context, f'{irc_name(peer)} ({peer_type}): {peer.display_name}')
-  notice(connection, context, f'id {peer.id}, username {peer.username}')
+  notice(connection, context, f'{irc_name(peer)} ({peer.kind.value}): {peer.display_name}')
+  notice(connection, context, f'id {peer.entity_id}, username {peer.username}')
 
 
 async def cmd_flush(connection, context, rest):
@@ -139,13 +137,13 @@ async def cmd_reply_search(connection, context, rest):
   else:
     connection.pending_choices = (context, matches, body)
     for number, match in enumerate(matches, 1):
-      sender = await Peer.get_or_none(id=match.sender_id)
-      name = sender.alias if sender else match.sender_id
+      sender = match.sender_id and await Peer.get(id=match.sender_id)
+      name = sender.alias if sender else connection.nick
       notice(connection, context, f'{PREFIX}R{number} {name}: {" ".join(match.text.split())}')
 
 
 async def cmd_reply_latest(connection, context, rest):
-  if context.id < 0:
+  if context.kind != PeerKind.USER:
     alias, _, body = rest.partition(':')
     sender = await find_peer(alias.strip())
   else:
@@ -174,14 +172,11 @@ async def cmd_idjoin(connection, context, rest):
   # as clients and t.me/c/<id>/<msg> links show them. A bare id tries the channel form first
   # so a supergroup wins over a basic group with the same number
   number = int(re.search(r'-?\d+', rest)[0])
-  if number < 0:
-    candidates = [number]
-  else:
-    candidates = [utils.get_peer_id(PeerChannel(number)), utils.get_peer_id(PeerChat(number))]
+  candidates = [number] if number < 0 else [PeerChannel(number), PeerChat(number)]
 
-  for chat_id in candidates:
+  for candidate in candidates:
     try:
-      chat = await connection.factory.session.resolve_peer_record(chat_id)
+      chat = await connection.factory.session.resolve_peer_record(candidate)
     except ValueError:
       continue
     if chat:
