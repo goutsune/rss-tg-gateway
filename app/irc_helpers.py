@@ -1,4 +1,4 @@
-import re
+import os, re
 from collections import namedtuple
 
 from slugify import slugify
@@ -10,7 +10,9 @@ from telethon.tl.types import (
   InputMessageEntityMentionName, InputPeerChannel, MessageEntityMention,
   MessageEntityMentionName, MessageReplyStoryHeader)
 
+import config
 from models import Peer
+from util import to_alpha
 
 SERVER = 'telegram'
 LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
@@ -76,6 +78,20 @@ async def incoming_mentions(session, message):
   return helpers.del_surrogate(text)
 
 
+def render_media(message, text):
+  if message.web_preview or not message.file:
+    return text
+  # /a/ is the web server's short media route: peer and message ids alpha-encoded with
+  # util.to_alpha, anything after the first . in the message part is only a filename hint
+  name, _ = os.path.splitext(message.file.name or '')
+  hint = f'.{slugify(name)}' if name else ''
+  link = f'{config.host}/a/{to_alpha(message.chat_id)}/{to_alpha(message.id)}{hint}' \
+    f'{message.file.ext or ""}'
+  if message.sticker:
+    link += f' {message.file.emoji}'
+  return f'{text} {link}' if text else link
+
+
 async def render_forward(message, text):
   forward = message.forward
   if not forward:
@@ -111,6 +127,7 @@ async def render_reply(message, recent, text):
     if any(c.isalnum() for c in quote):
       return f'> {quote}\n{text}'
 
+  quote = quote or f'[{to_alpha(message.reply_to_msg_id)}]'
   if len(quote) > QUOTE_LENGTH:
     quote = quote[:QUOTE_LENGTH] + '…'
   return f'> {quote} | {text}'

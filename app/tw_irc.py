@@ -18,7 +18,7 @@ import config, irc_commands, irc_message
 from irc_helpers import (
   RECENT_MESSAGES, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
   format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
-  render_reply)
+  render_media, render_reply)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -275,7 +275,8 @@ class TelegramIRCFactory(ServerFactory):
   async def render_message(self, message):
     recent = self.recent[message.chat_id]
     text = await incoming_mentions(self.session, message)
-    rendered = await render_reply(message, recent, await render_forward(message, text))
+    rendered = render_media(message, await render_forward(message, text))
+    rendered = await render_reply(message, recent, rendered)
     recent.append(RecentMessage(message.id, message.sender_id, text))
     return rendered
 
