@@ -4,7 +4,7 @@ between display names, aliases and Peer objects.
 from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
-from telethon.tl.types import User
+from telethon.tl.types import Channel, Chat, User
 
 import config
 from models import Peer
@@ -14,7 +14,8 @@ class TelegramSession:
 
   def __init__(self):
 
-    self.client = TelegramClient(config.user, config.api_id, config.api_hash)
+    self.client = TelegramClient(
+      config.user, config.api_id, config.api_hash, sequential_updates=True)
     self.client.parse_mode = 'html'  # hmm, is this configurable on the fly I wonder
 
   async def resolve_peer(self, peer, force=False):
@@ -32,7 +33,11 @@ class TelegramSession:
       return record
 
     try:
-      entity = await self.client.get_entity(peer)
+      if isinstance(peer, (User, Chat, Channel)):
+        entity = peer
+      else
+        entity = await self.client.get_entity(peer)
+
     except ChannelPrivateError:
       return False
 
@@ -48,9 +53,13 @@ class TelegramSession:
 
     username = getattr(entity, 'username', None)
     record = await Peer.create(
-      id=peer_id, first_name=first_name, last_name=last_name,
-      username=username, display_name=display_name,
+      id=peer_id,
+      first_name=first_name,
+      last_name=last_name,
+      username=username,
+      display_name=display_name,
       alias=username or slugify(display_name, max_length=20, separator='_'))
+
     return record
 
   async def startup(self):
