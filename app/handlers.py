@@ -12,6 +12,7 @@ from telethon.errors.rpcerrorlist import ChannelPrivateError
 
 import config
 from rss_helpers import render_msg
+from util import from_alpha
 
 # Preconfigure jinja2 template env
 templates = Environment(
@@ -117,8 +118,13 @@ async def retr_rss(session, request, peer, offset=0, limit=25):
     contents=res, peer=peer, info=info, title=title,
     link=link, avatar=avatar, date=date, build=build, offset=offset)
 
+# n is only used to hint link parsers with filename
+async def resolve_peer_with_media(
+  session, request, peer_id, msg, size=None, file_id=None, n=None):
 
-async def resolve_peer_with_media(session, request, peer_id, msg, size=None, file_id=None):
+  # Allow extensions in our msg id, remaining junk will get into _ as list
+  msg, *_ = msg.split('.')
+
   try:
     input_peer = await session.client.get_input_entity(int(peer_id))
   except ValueError as e:
@@ -187,6 +193,11 @@ async def retr_media(session, request, peer, msg, size=None, file_id=None):
     'Content-Type': mime_type,
     'Cache-Control': 'no-cache',
     'Content-Disposition': f'inline; filename={name}'}
+
+
+async def retr_short_media(session, request, peer, msg, n=None):
+  msg, *_ = msg.split('.')
+  return await resolve_peer_with_media(session, request, from_alpha(peer), from_alpha(msg))
 
 
 async def retr_msg(session, request, peer, msg):

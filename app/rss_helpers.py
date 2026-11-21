@@ -1,24 +1,14 @@
 from html import escape
 
-from telethon.tl.types import MessageService, \
-                                MessageActionPinMessage, \
-                                MessageActionChatEditPhoto, \
-                                MessageActionChannelCreate, \
-                                PageBlockParagraph, \
-                                PageBlockPhoto, \
-                                TextPlain, \
-                                TextConcat, \
-                                TextUrl, \
-                                TextBold, \
-                                TextItalic, \
-                                TextUnderline, \
-                                TextStrike, \
-                                TextFixed, \
-                                TextMarked, \
-                                TextSubscript, \
-                                TextSuperscript
+from telethon.tl.types import (
+  MessageService, MessageActionPinMessage, MessageActionChatEditPhoto, MessageActionChannelCreate,
+  PageBlockParagraph, PageBlockPhoto,
+  TextPlain, TextConcat, TextUrl, TextBold, TextItalic, TextUnderline,
+  TextStrike, TextFixed, TextMarked, TextSubscript, TextSuperscript)
 
+from util import get_filename
 import config
+
 
 rich_tags = {
   TextBold: 'b',
@@ -28,15 +18,7 @@ rich_tags = {
   TextFixed: 'code',
   TextMarked: 'mark',
   TextSubscript: 'sub',
-  TextSuperscript: 'sup',
-}
-
-
-def get_filename(attributes):
-
-  for attribute in attributes:
-    if hasattr(attribute, 'file_name'):
-      return attribute.file_name
+  TextSuperscript: 'sup'}
 
 
 def render_rich_text(text, html=True):

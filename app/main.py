@@ -30,13 +30,14 @@ root.putChild(b'rss', rss)
 root.putChild(b'media', media)
 root.putChild(b'msg', MyResouce(session, handlers.retr_msg))
 root.putChild(b'profile', MyResouce(session, handlers.retr_avatar))
+root.putChild(b'a', MyResouce(session, handlers.retr_short_media))  # For shorter attachment URL
 
 
 # #################### Init
 if __name__ == '__main__':
   asyncio.get_event_loop().run_until_complete(models.init())
   asyncio.get_event_loop().run_until_complete(session.startup())
-  log.startLogging(sys.stdout)
+  log.startLogging(sys.stdout)  # Don't start early to be able to use stdin in telethon
   reactor.addSystemEventTrigger(
     'before', 'shutdown',
     lambda: Deferred.fromFuture(asyncio.ensure_future(session.cleanup())))
