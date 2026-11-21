@@ -73,51 +73,53 @@ Another point of note are names in mtproto - there are 3 of them:
 
 # Plain old IRC
 
-Let's see what IRC equivalents do we have here. Oh, we have message sender and a single line of text. Great, that's not much, duh. 
+Let's see what IRC equivalents do we have here. Oh, we have message sender and a single line of text. Great, that's not much, duh.
 
 Let's then decide how we are going to represent this in IRC via various tradeoffs:
 
 ## 1. Timestamps
 
-All mtproto messages have server-side timestamp in UTC timzeone. I will need to check how server-side message capability is defined and use that. Both hexchat and irssi can use it.
+All mtproto messages have server-side timestamp in UTC timzeone. If there's capability negotiation, send date tags, otherwise we don't care for a live stream, received time from client is good enough.
 
 ## 2. History
 
 At first I thought about using server-side history capability of some IRc clients. But I really enjoyed irgramd's !h command that dumps history relative to last read marker. Might as well just go with that. And yes, better update that marker on every sent message, no stalker-like gizmos.
 
+Depending on capability negotiation send timestamp as a message tag, or prepend second-grained timestamp, with date displayed only on messages with date change.
+
 ## 3. Text
 
-A message body is preprocessed, actual newlines replaced by something like $R$N (\r\n is too common when you send bash scripts and whatnot).
+A message body is preprocessed and sent in batches, actual newlines replaced by something like "|" symbol, which is prepended to new next line and sent. Emply lines are preserved. If a single text line does not fit into IRC 512 byte buffer, it is split at word boundary and ^ suffix added to the missing part and again ^ prefix is added to remainder, can be recursive.
 
-Then a helper on the client side is made to break lines from incoming message. I think that's the only safe way to do it, and I don't plan to change clients a lot, so that's fine.
+Sending is a bit reverse. Ending message with ^ will send it into temporary buffer, where sending next message (as long as it's ending with ^) will append it to that buffer (+space symbol). Ending line with '|" also sends line into temporary buffer and appends newline to that buffer, so that composing multiline messages is possible. On each such message server reports with notice a number of chars and lines in buffer. While non-empty, single "." sends buffer, but "." itself is not sent. If a message ends normally that part is appended and message is sent. As you can expect, once buffer is complete it is parsed for bang commands and whatnot.
 
-TODO: Elaborate on mtproto markup <-> plaintext conversion.
+For now markup via MD output from telethon is enough.
 
-## 4. Names. 
+## 4. Names.
 
-I want to have clean IRC names in the channel, for this specific case I'd add small sqlite database to do the matching between account ID, alias and last shown name (caching), addtionaly an irc bot interface will be needed to manage them. 
+I want to have clean IRC names in the channel, for this specific case I'd add small sqlite database to do the matching between account ID, alias and last shown name (caching), addtionaly an irc bot interface will be needed to manage them.
 
-Initially fill in order of priority: username -> displayname slug -> numeric ID. numeric ID is possible if latin conversion does not produce any sensible result (just symbols or empty string). In this case user is expected to enter useful alias ASAP. By mentioning such a user in chat, backen then must lookup ID in table and insert appropriate highlight tag instead of text.
+Initially fill in order of priority: username -> displayname slug -> numeric ID. numeric ID is possible if latin conversion does not produce any sensible result (just symbols or empty string). In this case user is expected to enter useful alias ASAP. By mentioning such a user in chat, backend then must lookup ID in table and insert appropriate highlight tag instead of text.
 
 Example: "foo: glad you're having a nice dinner once in a while"
-Becomes: "[Mr. Foo], glad you're having(...)"
-Where [Mr. Foo] is a current user's displayname in the telegram network. 
+Becomes: "[Mr. Foo]: glad you're having(...)"
+Where [Mr. Foo] is a current user's displayname in the telegram network.
 
-Colon is chosen as a separator as a compromise between readability and clashes. E.g.: "man, what a day" might become a mention if there is a literal "man" user alias in the conversation. "::" would be used to send literal text, always.
+Colon is chosen as a separator as a compromise between readability and clashes. E.g.: "man, what a day" might become a mention if there is a literal "man" user alias in the conversation. "::" would be used to send literal ":".
 
-I also need to address IRC limitation - you can not in any sensible way *receive* a private message from yourself inside conversation with a user. This means I am force to display PMs sent from some other client as messages sent by user foo. I will probably prefix them with something like "*me: " and then process such messages on the irssi client side, that's 2 postprocessing scripts now.
+I also need to address IRC limitation - you can not in any sensible way *receive* a private message from yourself inside conversation with a user. Okay, not without capabilities. This means I am mostly forced to display PMs sent from some other client as messages sent by user foo. I will probably prefix them with something like "*me: " and then process such messages on the client side. Might be worth adding capability negotiation to support self-messages for clients that can use that.
 
-## 5. Replies. 
+## 5. Replies.
 
 I need 2 separate approaches for replies that follow current topic and are fairly easy to comprehend in a short form, and replies to "far" messages which commonly happen when somebody begins to reply to chat log on the next day.
 
 For short messages something like "> Let me intercep(...) | {reply_body}" is okay, this is exactly what I do when replying in IRC, and it will feel natural to me. I think I tend to copy about half of the terminal line or just type in specific terms so that reader understand what I am replying to during the talk.
 
-For "far" replies I wil probably want to supply complete message first (prefixed with >, like email, then add actual message body. I think I will always stick to short replies it poster only sends a smiley/sticker.
+For "far" replies I will probably want to supply complete message first (prefixed with >, like email, then add actual message body. I think I will always stick to short replies it poster only sends a smiley/sticker.
 
 To reply to the message on the irc side I think I will want 2 ways:
 
-1. Bang command !R with partial message text to match, followed with pipe. Same as short format but backwards, client is the supposed to do search for past N lines, if message is found, make whever goes after | - the message body, otherwise send error via notice.
+1. Bang command !R with partial message text to match, followed with pipe. Same as short format but backwards, client is the supposed to do search for past N lines, if message is found, make whever goes after | - the message body, otherwise send error via notice. I think keeping past ~200 messages in buffer is fine. In case of multiple matches I expect server to send me a notice with choices, to which I can reply with !R1 !R2 etc
 2. Bang command !r with username alias, coolon, then message body. This should find latest message from a user and reply to it, feels like a useful shorthand in ongoing dialogue in the chat. In case of PM !r should only contain message body.
 
 ## 6. Forwards
@@ -126,20 +128,34 @@ Well these are basically messages with known from field. Some people repost LOTS
 
 foo: (F: bar) {message content}
 
-Where foo is our sender alias, and bar is again best-effort slug conversion or existing alias. 
+Where foo is our sender alias, and bar is again best-effort slug conversion or existing alias.
 
 I do not want to use actual display name there as it can be rather long, and I'd much prefer to keep it to single line for short texts.
 
 
 ## 7. Media
 
-Messages can have media attached to them: music, images, stickers, "gif", generic file data. Either a simple sidecar http server that takes args and spits result with mime, or a local downloader with IRC serializer pointing to cache folder root is ok. 
+Messages can have media attached to them: music, images, stickers, "gif", generic file data. Either a simple sidecar http server that takes args and spits result with mime, or a local downloader with IRC serializer pointing to cache folder root is ok.
 
 I am a little bit more into realtime server here - otherwise we might be sending a link for a while not yet existing on the disc, bummer. And cleanup is a chore. I've alredy implemented such server for rss bridge to serve post media via http anyway.
 
 There will be many stickers. I don't care about image2ascii conversion crap. Instead just send a link + spit sticker emojis. I think that's good enough.
 
 Telegram extracts http metadata for http links, notably site name, cover image and description. Initially I thought about extracting just title and add that after URL, but many sites only use generic title. Will description work better then? I think it will, on some sites title is visible in URL slug anyway.
+
+## 8. Chats
+
+Modern messengers see far more activity than we had on IRC. There for I'd favor opt-in on joined channels, instead of force-joining user to all of them on incoming activity. PMs stay as usual, though. Joining should be possible by both alias name or chat id, but joining by id force-joins you to a channel and kicks from id, or perhaps implement custom /idjoin command that just force-joins you to a chat.
+
+Chat description maps to chat topic, newlines normalized to remove empty lines and then replaced with ' :: ' sequence.
+
+This state is not perserved between reconnections/restarts, irc client manages autojoins.
+
+## 9. "Topics"
+
+There needs to be a hacky work-around when keeping session state. Normally chat id <-> irc alias is enough to represent chats, but since we have forums, another in-memory field will be needed for topic id. I don't know exactly how far reply framework go, can replies to replies happen where we lose the topic message ID? If so, some reply chain tracking required. Care needs to be taken so that topic replies do not leak into base chat, if I'm not mistaken that's how messaging in the first "topic" are handled.
+
+From the client standpoint that's #foo/topic-alias, which also means we need to store aliases to that, sigh. I want alias standalone so that's character-based entity_id[/topic_msg_id] format.
 
 ---
 
