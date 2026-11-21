@@ -8,7 +8,6 @@ from twisted.words.protocols import irc as irc_protocol
 import config, irc_message
 
 SERVER = 'telegram'
-PRE_REGISTRATION = {'PASS', 'NICK', 'USER', 'PING', 'QUIT'}
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -42,7 +41,7 @@ class IRCConnection(LineOnlyReceiver):
     if handler is None:
       self.numeric(irc_protocol.ERR_UNKNOWNCOMMAND, command, 'Unknown command')
       return
-    if not self.registered and command not in PRE_REGISTRATION:
+    if not self.registered and command not in {'PASS', 'NICK', 'USER', 'PING', 'QUIT'}:
       self.numeric(irc_protocol.ERR_NOTREGISTERED, 'Not registered')
       return
 
