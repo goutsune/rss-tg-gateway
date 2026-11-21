@@ -5,6 +5,7 @@ from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
 from telethon.tl.types import Channel, Chat, User
+from tortoise.exceptions import IntegrityError
 
 import config
 from models import Peer
@@ -35,7 +36,7 @@ class TelegramSession:
     try:
       if isinstance(peer, (User, Chat, Channel)):
         entity = peer
-      else
+      else:
         entity = await self.client.get_entity(peer)
 
     except ChannelPrivateError:
@@ -52,15 +53,27 @@ class TelegramSession:
       display_name = entity.title
 
     username = getattr(entity, 'username', None)
-    record = await Peer.create(
-      id=peer_id,
+    fields = dict(
       first_name=first_name,
       last_name=last_name,
       username=username,
-      display_name=display_name,
-      alias=username or slugify(display_name, max_length=20, separator='_'))
+      display_name=display_name)
 
-    return record
+    if record:
+      await record.update_from_dict(fields).save()
+      return record
+
+    if username:
+      base = username.lower()
+    else:
+      base = slugify(display_name, max_length=20, separator='_') or f'i{abs(peer_id)}'
+    alias, suffix = base, 1
+    while True:
+      try:
+        return await Peer.create(id=peer_id, alias=alias, **fields)
+      except IntegrityError:
+        suffix += 1
+        alias = f'{base}{suffix}'
 
   async def startup(self):
     print("Connecting...")

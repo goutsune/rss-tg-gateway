@@ -12,7 +12,7 @@ class Peer(Model):
   last_name = fields.TextField(null=True)
   username = fields.TextField(null=True)
   display_name = fields.TextField()
-  alias = fields.CharField(max_length=32)
+  alias = fields.CharField(max_length=32, unique=True)
   updated_at = fields.DatetimeField(auto_now=True)
 
 
