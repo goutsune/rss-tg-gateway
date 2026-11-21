@@ -4,6 +4,7 @@ import re
 
 from slugify import slugify
 from telethon import utils
+from telethon.tl.types import PeerChannel, PeerChat
 from tortoise.expressions import Q
 
 from irc_helpers import SERVER, Autojoin, find_peer, irc_name
@@ -23,6 +24,7 @@ HELP = [
   'flush: drop cached chat topics',
   'autojoin [never|mentions|on_event]: show or set when a chat message joins you to its '
   'channel; mentions covers replies to you too, a parted channel waits for your JOIN',
+  'idjoin <id>: join a chat by the id or t.me/c/ link copied from Telegram',
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
@@ -167,6 +169,29 @@ async def cmd_autojoin(connection, context, rest):
   notice(connection, context, f'Autojoin: {connection.factory.autojoin.value}')
 
 
+async def cmd_idjoin(connection, context, rest):
+  # Ids come copied from Telegram either marked (-100... channels, -... basic groups) or bare,
+  # as clients and t.me/c/<id>/<msg> links show them. A bare id tries the channel form first
+  # so a supergroup wins over a basic group with the same number
+  number = int(re.search(r'-?\d+', rest)[0])
+  if number < 0:
+    candidates = [number]
+  else:
+    candidates = [utils.get_peer_id(PeerChannel(number)), utils.get_peer_id(PeerChat(number))]
+
+  for chat_id in candidates:
+    try:
+      chat = await connection.factory.session.resolve_peer_record(chat_id)
+    except ValueError:
+      continue
+    if chat:
+      connection.parted.discard(irc_name(chat).lower())
+      if irc_name(chat).lower() not in connection.channels:
+        await connection.join_chat(chat)
+      return
+  notice(connection, context, f'No known chat with id {number}')
+
+
 COMMANDS = {
   'help': cmd_help,
   'alias': cmd_alias,
@@ -174,6 +199,7 @@ COMMANDS = {
   'whois': cmd_whois,
   'flush': cmd_flush,
   'autojoin': cmd_autojoin,
+  'idjoin': cmd_idjoin,
   'R': cmd_reply_search,
   'r': cmd_reply_latest,
 }
