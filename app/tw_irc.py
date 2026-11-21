@@ -1,6 +1,7 @@
 ''' IRC server side: line framing on Twisted, one active client connection
 '''
 import asyncio, inspect
+from datetime import datetime, timezone
 
 from telethon import events
 from telethon.errors import RPCError
@@ -11,10 +12,9 @@ from twisted.python import log
 from twisted.python.failure import Failure
 from twisted.words.protocols import irc as irc_protocol
 
-import config, irc_message
+import config, irc_commands, irc_message
 from irc_helpers import (
-  SERVER, fetch_names, fetch_topic, iter_text_lines, peer_hostmask)
-from models import Peer
+  SERVER, fetch_names, fetch_topic, find_peer, irc_name, iter_text_lines, peer_hostmask)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -98,7 +98,16 @@ class IRCConnection(LineOnlyReceiver):
                'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
     self.reply(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
-  def join(self, channel, topic, names):
+  async def join_chat(self, chat):
+    channel = irc_name(chat)
+    session = self.factory.session
+    topic = await fetch_topic(session.client, chat.id)
+    try:
+      names = await fetch_names(session, chat.id)
+    except RPCError as e:
+      self.send('NOTICE', self.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
+      names = []
+
     self.channels.add(channel.lower())
     self.send('JOIN', channel, prefix=self.hostmask)
     if topic:
@@ -106,6 +115,10 @@ class IRCConnection(LineOnlyReceiver):
     for names_line in iter_text_lines([self.nick, *names], 400):
       self.reply(irc_protocol.RPL_NAMREPLY, '=', channel, names_line)
     self.reply(irc_protocol.RPL_ENDOFNAMES, channel, 'End of NAMES')
+
+  def part(self, channel):
+    self.channels.discard(channel.lower())
+    self.send('PART', channel, prefix=self.hostmask)
 
   def relay(self, prefix, target, lines, date):
     tags = None
@@ -177,19 +190,25 @@ class IRCConnection(LineOnlyReceiver):
     self.reply(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
   def irc_PART(self, channel, *_):
-    self.channels.discard(channel.lower())
-    self.send('PART', channel, prefix=self.hostmask)
+    self.part(channel)
 
   async def irc_PRIVMSG(self, target, text):
-    peer = await Peer.get_or_none(alias=target.removeprefix('#'))
-    if not peer:
-      self.reply(irc_protocol.ERR_NOSUCHNICK, target, 'No such nick/channel')
+    peer = None
+    if target.lower() != irc_commands.SERVICE.lower():
+      peer = await find_peer(target)
+      if not peer:
+        self.reply(irc_protocol.ERR_NOSUCHNICK, target, 'No such nick/channel')
+        return
+    if 'echo-message' in self.caps:
+      self.relay(self.hostmask, target, [text], datetime.now(timezone.utc))
+
+    prefix = irc_commands.PREFIX
+    if not peer or text.startswith(prefix) and not text.startswith(prefix * 2):
+      await irc_commands.run(self, peer, text.removeprefix(prefix))
       return
     client = self.factory.session.client
-    message = await client.send_message(peer.id, text, parse_mode=None)
+    await client.send_message(peer.id, text.removeprefix(prefix), parse_mode=None)
     await client.send_read_acknowledge(peer.id)
-    if 'echo-message' in self.caps:
-      self.relay(self.hostmask, target, [text], message.date)
 
 
 class TelegramIRCFactory(ServerFactory):
@@ -229,14 +248,8 @@ class TelegramIRCFactory(ServerFactory):
     connection = self.active
     if not connection:
       return
-    channel = f'#{chat.alias}'
+    channel = irc_name(chat)
     if channel.lower() not in connection.channels:
-      topic = await fetch_topic(self.session.client, event.chat_id)
-      try:
-        names = await fetch_names(self.session, event.chat_id)
-      except RPCError as e:
-        connection.send('NOTICE', connection.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
-        names = []
-      connection.join(channel, topic, names)
+      await connection.join_chat(chat)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
     connection.relay(prefix, channel, event.raw_text.split('\n'), event.date)

@@ -2,11 +2,23 @@ from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.types import InputPeerChannel
 
+from models import Peer
+
 SERVER = 'telegram'
 
 
 def peer_hostmask(peer):
   return f'{peer.alias}!{peer.id}@{SERVER}'
+
+
+def irc_name(peer):
+  return f'#{peer.alias}' if peer.id < 0 else peer.alias
+
+
+async def find_peer(name):
+  if name.startswith('#'):
+    return await Peer.get_or_none(alias__iexact=name[1:], id__lt=0)
+  return await Peer.get_or_none(alias__iexact=name, id__gt=0)
 
 
 async def fetch_topic(client, chat_id):

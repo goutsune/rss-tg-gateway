@@ -63,10 +63,13 @@ class TelegramSession:
       await record.update_from_dict(fields).save()
       return record
 
+    slug = slugify(display_name, max_length=20, separator='_')
     if username:
       base = username.lower()
+    elif slug[:1].isdigit():
+      base = f'_{slug}'
     else:
-      base = slugify(display_name, max_length=20, separator='_') or f'i{abs(peer_id)}'
+      base = slug or f'i{abs(peer_id)}'
     alias, suffix = base, 1
     while True:
       try:
