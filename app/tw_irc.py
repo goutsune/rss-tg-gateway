@@ -1,13 +1,18 @@
 ''' IRC server side: line framing on Twisted, one active client connection
 '''
+import asyncio, inspect
+
+from telethon import events
+from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.python import log
+from twisted.python.failure import Failure
 from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_message
-
-SERVER = 'telegram'
+from irc_helpers import SERVER, peer_hostmask, render_lines
+from models import Peer
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -46,12 +51,18 @@ class IRCConnection(LineOnlyReceiver):
       return
 
     try:
-      handler(*params)
-    except Exception as e:
-      log.err(None, f'IRC {command} handler failed')
-      self.send('NOTICE', self.nick or '*', f'{command} failed: {e!r}', prefix=SERVER)
+      result = handler(*params)
+    except Exception:
+      self.command_failed(Failure(), command)
+      return
+    if inspect.iscoroutine(result):
+      Deferred.fromFuture(asyncio.ensure_future(result)).addErrback(self.command_failed, command)
 
   # #################### Connection helpers
+  def command_failed(self, failure, command):
+    log.err(failure, f'IRC {command} failed')
+    self.send('NOTICE', self.nick or '*', f'{command} failed: {failure.value!r}', prefix=SERVER)
+
   @property
   def hostmask(self):
     return f'{self.nick}!{self.user}@{SERVER}'
@@ -112,6 +123,15 @@ class IRCConnection(LineOnlyReceiver):
   def irc_WHO(self, mask='*', *_):
     self.reply(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
+  async def irc_PRIVMSG(self, target, text):
+    peer = await Peer.get_or_none(alias=target)
+    if not peer:
+      self.reply(irc_protocol.ERR_NOSUCHNICK, target, 'No such nick')
+      return
+    client = self.factory.session.client
+    await client.send_message(peer.id, text, parse_mode=None)
+    await client.send_read_acknowledge(peer.id)
+
 
 class TelegramIRCFactory(ServerFactory):
   protocol = IRCConnection
@@ -119,8 +139,18 @@ class TelegramIRCFactory(ServerFactory):
   def __init__(self, session):
     self.session = session
     self.active = None
+    session.client.add_event_handler(
+      self.on_private_message, events.NewMessage(incoming=True, func=lambda e: e.is_private))
 
   def attach(self, connection):
     if self.active:
       self.active.error('Replaced by a new connection')
     self.active = connection
+
+  # #################### Telegram events
+  async def on_private_message(self, event):
+    sender = await self.session.resolve_peer_record(event.sender_id)
+    if not self.active:
+      return
+    for line in render_lines(event.message):
+      self.active.send('PRIVMSG', self.active.nick, line, prefix=peer_hostmask(sender))

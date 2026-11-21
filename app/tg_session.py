@@ -22,10 +22,14 @@ class TelegramSession:
     resolving them from peer identifier objects. Currently it just
     stores rendered name never updating it, which might be a problem.
     '''
+    record = await self.resolve_peer_record(peer, force)
+    return record and record.display_name
+
+  async def resolve_peer_record(self, peer, force=False):
     peer_id = utils.get_peer_id(peer)
     record = await Peer.get_or_none(id=peer_id)
     if record and not force:
-      return record.display_name
+      return record
 
     try:
       entity = await self.client.get_entity(peer)
@@ -47,7 +51,7 @@ class TelegramSession:
       id=peer_id, first_name=first_name, last_name=last_name,
       username=username, display_name=display_name,
       alias=username or slugify(display_name, max_length=20, separator='_'))
-    return record.display_name
+    return record
 
   async def startup(self):
     print("Connecting...")
