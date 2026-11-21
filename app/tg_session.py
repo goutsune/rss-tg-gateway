@@ -5,7 +5,8 @@ from slugify import slugify
 from telethon import TelegramClient, utils
 from telethon.errors.rpcerrorlist import ChannelPrivateError
 from telethon.tl.functions.messages import GetForumTopicsByIDRequest
-from telethon.tl.types import Channel, Chat, PeerChannel, PeerChat, PeerUser, User
+from telethon.tl.types import (
+  Channel, Chat, MessageReplyHeader, PeerChannel, PeerChat, PeerUser, User)
 
 import config
 from models import Peer, PeerKind
@@ -85,7 +86,16 @@ class TelegramSession:
       base = slugify(display_name, max_length=20, separator='_') or f'i{entity_id}'
     return await create_aliased(base, Peer.exclude(kind=PeerKind.TOPIC), **key, **fields)
 
-  async def resolve_topic_record(self, chat, topic_id):
+  async def resolve_conversation_record(self, message):
+    ''' Record of the chat a message went to, or of its forum topic. Topics other than General
+    flag their messages, General ones stay with the chat itself
+    '''
+    chat = await self.resolve_peer_record(message.peer_id)
+    reply_to = message.reply_to
+    if not (isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic):
+      return chat
+
+    topic_id = reply_to.reply_to_top_id or reply_to.reply_to_msg_id
     key = dict(kind=PeerKind.TOPIC, entity_id=chat.entity_id, topic_id=topic_id)
     if record := await Peer.filter(**key).select_related('forum').get_or_none():
       return record

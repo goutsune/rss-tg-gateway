@@ -7,7 +7,6 @@ from functools import partial
 
 from telethon import events
 from telethon.errors import RPCError
-from telethon.tl.types import MessageReplyHeader
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
 from twisted.protocols.basic import LineOnlyReceiver
@@ -19,7 +18,7 @@ import config, irc_commands, irc_message
 from models import PeerKind
 from irc_helpers import (
   RECENT_MESSAGES, Autojoin, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
-  format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
+  format_edit, format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
   render_media, render_reply)
 
 
@@ -283,6 +282,9 @@ class TelegramIRCFactory(ServerFactory):
       self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
       self.on_chat_message, events.NewMessage(func=lambda e: e.is_group))
+    session.client.add_event_handler(
+      self.on_edit,
+      events.MessageEdited(incoming=True, func=lambda e: e.is_private or e.is_group))
 
   def attach(self, connection):
     if self.active:
@@ -317,15 +319,8 @@ class TelegramIRCFactory(ServerFactory):
       connection.relay(peer_hostmask(peer), connection.nick, f'*me: {text}', event.date)
 
   async def on_chat_message(self, event):
-    chat = await self.session.resolve_peer_record(event.message.peer_id)
+    conversation = await self.session.resolve_conversation_record(event.message)
     sender = None if event.out else await self.session.resolve_peer_record(event.message.from_id)
-    # Forum topics other than General flag their messages; General stays in the chat channel
-    reply_to = event.message.reply_to
-    forum_topic = None
-    if isinstance(reply_to, MessageReplyHeader) and reply_to.forum_topic:
-      topic_id = reply_to.reply_to_top_id or reply_to.reply_to_msg_id
-      forum_topic = await self.session.resolve_topic_record(chat, topic_id)
-    conversation = forum_topic or chat
     text = await self.render_message(event.message, conversation, sender)
     connection = self.active
     if not connection:
@@ -338,3 +333,26 @@ class TelegramIRCFactory(ServerFactory):
       await connection.join_chat(conversation)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
     connection.relay(prefix, channel, text, event.date)
+
+  async def on_edit(self, event):
+    conversation = await self.session.resolve_conversation_record(event.message)
+    recent = self.recent[conversation.id]
+    index = next((i for i, m in enumerate(recent) if m.id == event.id), None)
+    text = await incoming_mentions(self.session, event.message)
+    old = None
+    if index is not None:
+      old = recent[index].text
+      recent[index] = recent[index]._replace(text=text)
+
+    connection = self.active
+    if not connection:
+      return
+    target = irc_name(conversation)
+    if conversation.kind == PeerKind.USER:
+      sender, target = conversation, connection.nick
+    elif target.lower() in connection.channels:
+      sender = await self.session.resolve_peer_record(event.message.from_id)
+    else:
+      return
+    for line in format_edit(old, text):
+      connection.relay(peer_hostmask(sender), target, line, event.message.edit_date)

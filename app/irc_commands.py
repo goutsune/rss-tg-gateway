@@ -42,6 +42,8 @@ HELP = [
   '  > <caption> | text is a reply to a story',
   '  (F: name) text was forwarded from name',
   '  *me: text in a private chat is something you sent from another Telegram app',
+  '  %s/old/new/ means they edited old into new in their message',
+  '  % Edit: text is their edited line in full, %| Edit: text one changed line of a longer one',
 ]
 
 

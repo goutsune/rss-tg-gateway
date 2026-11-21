@@ -1,5 +1,6 @@
 import os, re
 from collections import namedtuple
+from difflib import SequenceMatcher
 from enum import Enum
 
 from slugify import slugify
@@ -19,6 +20,7 @@ SERVER = 'telegram'
 LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
 RECENT_MESSAGES = 200
 QUOTE_LENGTH = 30
+EDIT_LENGTH = 20
 
 RecentMessage = namedtuple('RecentMessage', 'id sender_id text')
 
@@ -165,6 +167,46 @@ def format_multiline_msg(text, rem_lines):
       yield f'{head}^'
       line = '^' + line[len(head):].removeprefix(' ')
     yield line
+
+
+def format_line_edit(old, new):
+  ''' %s/old/new/ for one changed run of words up to EDIT_LENGTH, whole line otherwise. Pure
+  inserts and deletes take the neighbouring word along, so the old part is never empty
+  '''
+  old_words, new_words = old.split(' '), new.split(' ')
+  changes = [op for op in SequenceMatcher(None, old_words, new_words).get_opcodes()
+             if op[0] != 'equal']
+  if len(changes) == 1:
+    _, i1, i2, j1, j2 = changes[0]
+    if i1 == i2 or j1 == j2:
+      if i1:
+        i1, j1 = i1 - 1, j1 - 1
+      else:
+        i2, j2 = i2 + 1, j2 + 1
+    before, after = ' '.join(old_words[i1:i2]), ' '.join(new_words[j1:j2])
+    if max(len(before), len(after)) <= EDIT_LENGTH:
+      return f'%s/{before}/{after}/'
+  return f'% Edit: {new}'
+
+
+def format_edit(old, new):
+  ''' Lines announcing an edit: one line changed -> format_line_edit, more lines changed or added
+  -> each of them as %| Edit:, unknown old text -> the whole new text. Removed lines are not shown
+  '''
+  new_lines = new.split('\n')
+  if old is None:
+    if len(new_lines) == 1:
+      return [f'% Edit: {new}']
+    return [f'%| Edit: {line}' for line in new_lines]
+
+  old_lines = old.split('\n')
+  changes = [op for op in SequenceMatcher(None, old_lines, new_lines).get_opcodes()
+             if op[0] != 'equal']
+  if len(changes) == 1 and changes[0][0] == 'replace':
+    _, i1, i2, j1, j2 = changes[0]
+    if i2 - i1 == 1 and j2 - j1 == 1:
+      return [format_line_edit(old_lines[i1], new_lines[j1])]
+  return [f'%| Edit: {line}' for _, _, _, j1, j2 in changes for line in new_lines[j1:j2]]
 
 
 def iter_text_lines(words, limit):
