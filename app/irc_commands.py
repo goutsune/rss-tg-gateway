@@ -6,7 +6,7 @@ from slugify import slugify
 from telethon import utils
 from tortoise.expressions import Q
 
-from irc_helpers import SERVER, find_peer, irc_name
+from irc_helpers import SERVER, Autojoin, find_peer, irc_name
 from models import Peer
 
 SERVICE = 'TelegramServ'
@@ -21,6 +21,8 @@ HELP = [
   'aliases [filter]: aliases with filter in alias or display name',
   'whois [name]: peer record, name defaults to the current conversation',
   'flush: drop cached chat topics',
+  'autojoin [never|mentions|on_event]: show or set when a chat message joins you to its '
+  'channel; mentions covers replies to you too, a parted channel waits for your JOIN',
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
@@ -154,12 +156,24 @@ async def cmd_reply_latest(connection, context, rest):
   await connection.send_to_telegram(context, body.strip(), reply_to=latest.id)
 
 
+async def cmd_autojoin(connection, context, rest):
+  if mode := rest.strip():
+    try:
+      connection.factory.autojoin = Autojoin(mode)
+    except ValueError:
+      modes = ', '.join(m.value for m in Autojoin)
+      notice(connection, context, f'Autojoin is one of {modes}')
+      return
+  notice(connection, context, f'Autojoin: {connection.factory.autojoin.value}')
+
+
 COMMANDS = {
   'help': cmd_help,
   'alias': cmd_alias,
   'aliases': cmd_aliases,
   'whois': cmd_whois,
   'flush': cmd_flush,
+  'autojoin': cmd_autojoin,
   'R': cmd_reply_search,
   'r': cmd_reply_latest,
 }

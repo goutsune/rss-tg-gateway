@@ -1,5 +1,6 @@
 import os, re
 from collections import namedtuple
+from enum import Enum
 
 from slugify import slugify
 from telethon import helpers, utils
@@ -20,6 +21,12 @@ RECENT_MESSAGES = 200
 QUOTE_LENGTH = 30
 
 RecentMessage = namedtuple('RecentMessage', 'id sender_id text')
+
+
+class Autojoin(Enum):
+  NEVER = 'never'
+  MENTIONS = 'mentions'
+  ON_EVENT = 'on_event'
 
 
 def peer_hostmask(peer):

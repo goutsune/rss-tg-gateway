@@ -16,7 +16,7 @@ from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_commands, irc_message
 from irc_helpers import (
-  RECENT_MESSAGES, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
+  RECENT_MESSAGES, Autojoin, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
   format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
   render_media, render_reply)
 
@@ -37,6 +37,7 @@ class IRCConnection(LineOnlyReceiver):
     self.channels = set()
     self.pending_choices = None
     self.compose = {}
+    self.parted = set()
 
   def connectionLost(self, reason):
     if self.factory.active is self:
@@ -196,7 +197,18 @@ class IRCConnection(LineOnlyReceiver):
     self.reply(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
   def irc_PART(self, channel, *_):
+    self.parted.add(channel.lower())
     self.part(channel)
+
+  async def irc_JOIN(self, channels, *_):
+    for name in channels.split(','):
+      chat = await find_peer(name) if name.startswith('#') else None
+      if not chat:
+        self.reply(irc_protocol.ERR_NOSUCHCHANNEL, name, 'No such channel')
+        continue
+      self.parted.discard(name.lower())
+      if irc_name(chat).lower() not in self.channels:
+        await self.join_chat(chat)
 
   async def irc_LIST(self, *_):
     session = self.factory.session
@@ -257,6 +269,7 @@ class TelegramIRCFactory(ServerFactory):
     self.active = None
     self.topics = {}
     self.recent = defaultdict(partial(deque, maxlen=RECENT_MESSAGES))
+    self.autojoin = Autojoin.MENTIONS
     session.client.add_event_handler(
       self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
@@ -303,6 +316,9 @@ class TelegramIRCFactory(ServerFactory):
       return
     channel = irc_name(chat)
     if channel.lower() not in connection.channels:
+      if channel.lower() in connection.parted or self.autojoin == Autojoin.NEVER or \
+          self.autojoin == Autojoin.MENTIONS and not event.mentioned:
+        return
       await connection.join_chat(chat)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
     connection.relay(prefix, channel, text, event.date)
