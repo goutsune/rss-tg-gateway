@@ -100,10 +100,9 @@ class IRCConnection(LineOnlyReceiver):
 
   async def join_chat(self, chat):
     channel = irc_name(chat)
-    session = self.factory.session
-    topic = await fetch_topic(session.client, chat.id)
+    topic = await self.factory.chat_topic(chat)
     try:
-      names = await fetch_names(session, chat.id)
+      names = await fetch_names(self.factory.session, chat.id)
     except RPCError as e:
       self.send('NOTICE', self.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
       names = []
@@ -192,6 +191,16 @@ class IRCConnection(LineOnlyReceiver):
   def irc_PART(self, channel, *_):
     self.part(channel)
 
+  async def irc_LIST(self, *_):
+    session = self.factory.session
+    async for dialog in session.client.iter_dialogs():
+      peer = await session.resolve_peer_record(dialog.entity)
+      if dialog.is_group:
+        size = getattr(dialog.entity, 'participants_count', None) or 0
+        topic = await self.factory.chat_topic(peer)
+        self.reply(irc_protocol.RPL_LIST, irc_name(peer), size, topic)
+    self.reply(irc_protocol.RPL_LISTEND, 'End of LIST')
+
   async def irc_PRIVMSG(self, target, text):
     peer = None
     if target.lower() != irc_commands.SERVICE.lower():
@@ -217,6 +226,7 @@ class TelegramIRCFactory(ServerFactory):
   def __init__(self, session):
     self.session = session
     self.active = None
+    self.topics = {}
     session.client.add_event_handler(
       self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
@@ -226,6 +236,11 @@ class TelegramIRCFactory(ServerFactory):
     if self.active:
       self.active.error('Replaced by a new connection')
     self.active = connection
+
+  async def chat_topic(self, chat):
+    if chat.id not in self.topics:
+      self.topics[chat.id] = await fetch_topic(self.session.client, chat)
+    return self.topics[chat.id]
 
   # #################### Telegram events
   async def on_private_message(self, event):

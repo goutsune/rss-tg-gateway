@@ -21,13 +21,14 @@ async def find_peer(name):
   return await Peer.get_or_none(alias__iexact=name, id__gt=0)
 
 
-async def fetch_topic(client, chat_id):
-  chat = await client.get_input_entity(chat_id)
-  if isinstance(chat, InputPeerChannel):
-    full = await client(GetFullChannelRequest(chat))
+async def fetch_topic(client, chat):
+  input_chat = await client.get_input_entity(chat.id)
+  if isinstance(input_chat, InputPeerChannel):
+    full = await client(GetFullChannelRequest(input_chat))
   else:
-    full = await client(GetFullChatRequest(chat.chat_id))
-  return ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
+    full = await client(GetFullChatRequest(input_chat.chat_id))
+  description = ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
+  return f'{chat.display_name} // {description}' if description else chat.display_name
 
 
 async def fetch_names(session, chat_id):

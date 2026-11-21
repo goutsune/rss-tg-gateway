@@ -18,6 +18,7 @@ HELP = [
   'alias [name] <new>: rename a user or #chat, name defaults to the current conversation',
   'aliases [filter]: aliases with filter in alias or display name',
   'whois [name]: peer record, name defaults to the current conversation',
+  'flush: drop cached chat topics',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
 ]
 
@@ -86,9 +87,15 @@ async def cmd_whois(connection, context, *names):
   notice(connection, context, f'id {peer.id}, username {peer.username}')
 
 
+async def cmd_flush(connection, context):
+  connection.factory.topics.clear()
+  notice(connection, context, 'Topic cache dropped')
+
+
 COMMANDS = {
   'help': cmd_help,
   'alias': cmd_alias,
   'aliases': cmd_aliases,
   'whois': cmd_whois,
+  'flush': cmd_flush,
 }
