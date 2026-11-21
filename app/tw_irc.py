@@ -39,10 +39,10 @@ class IRCConnection(LineOnlyReceiver):
 
     handler = getattr(self, f'irc_{command}', None)
     if handler is None:
-      self.numeric(irc_protocol.ERR_UNKNOWNCOMMAND, command, 'Unknown command')
+      self.reply(irc_protocol.ERR_UNKNOWNCOMMAND, command, 'Unknown command')
       return
     if not self.registered and command not in {'PASS', 'NICK', 'USER', 'PING', 'QUIT'}:
-      self.numeric(irc_protocol.ERR_NOTREGISTERED, 'Not registered')
+      self.reply(irc_protocol.ERR_NOTREGISTERED, 'Not registered')
       return
 
     try:
@@ -59,7 +59,7 @@ class IRCConnection(LineOnlyReceiver):
   def send(self, command, *params, prefix=None, tags=None):
     self.sendLine(irc_message.encode(command, *params, prefix=prefix, tags=tags).encode())
 
-  def numeric(self, code, *params):
+  def reply(self, code, *params):
     self.send(code, self.nick or '*', *params, prefix=SERVER)
 
   def error(self, reason):
@@ -70,16 +70,16 @@ class IRCConnection(LineOnlyReceiver):
     if self.registered or not (self.nick and self.user):
       return
     if self.password != config.irc_password:
-      self.numeric(irc_protocol.ERR_PASSWDMISMATCH, 'Password incorrect')
+      self.reply(irc_protocol.ERR_PASSWDMISMATCH, 'Password incorrect')
       self.error('Bad password')
       return
 
     self.registered = True
     self.factory.attach(self)
-    self.numeric(irc_protocol.RPL_WELCOME, self.hostmask)
-    self.numeric(irc_protocol.RPL_ISUPPORT,
+    self.reply(irc_protocol.RPL_WELCOME, self.hostmask)
+    self.reply(irc_protocol.RPL_ISUPPORT,
                  'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
-    self.numeric(irc_protocol.ERR_NOMOTD, 'No MOTD')
+    self.reply(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
   # #################### IRC commands
   def irc_PASS(self, password, *_):
@@ -103,14 +103,14 @@ class IRCConnection(LineOnlyReceiver):
 
   def irc_MODE(self, target, *_):
     if target.lower() == self.nick.lower():
-      self.numeric(irc_protocol.RPL_UMODEIS, '+')
+      self.reply(irc_protocol.RPL_UMODEIS, '+')
 
   def irc_USERHOST(self, *nicks):
     own = [f'{self.nick}=+{self.user}@{SERVER}' for n in nicks if n.lower() == self.nick.lower()]
-    self.numeric(irc_protocol.RPL_USERHOST, ' '.join(own))
+    self.reply(irc_protocol.RPL_USERHOST, ' '.join(own))
 
   def irc_WHO(self, mask='*', *_):
-    self.numeric(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
+    self.reply(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
 
 class TelegramIRCFactory(ServerFactory):
