@@ -6,4 +6,5 @@ host = 'http://127.0.0.1:9504'
 bind = '127.0.0.1'
 web_port = 9504
 irc_port = 6667
+irc_password = 'XXXXXXXX'
 db_url = 'sqlite://cache.db'
