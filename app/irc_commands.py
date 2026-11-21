@@ -24,6 +24,21 @@ HELP = [
   'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
   'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
+  '',
+  'Writing longer messages:',
+  '  end a line with ^ to keep typing, the next line continues after a space',
+  '  end a line with | to keep typing, the next line starts on a new line',
+  '  type a lone . to send what you have, or just finish with a normal line',
+  '  start with "foo: " to mention foo by name, "foo:: " keeps it as plain text',
+  '',
+  'Reading what comes in:',
+  '  |text is the same message continuing on a new line',
+  '  text^ and ^text are one long line cut in two',
+  '  > quote… | text is a reply to that quote',
+  '  > quote on its own line, then text, replies to an older message or quotes part of one',
+  '  > <caption> | text is a reply to a story',
+  '  (F: name) text was forwarded from name',
+  '  *me: text in a private chat is something you sent from another Telegram app',
 ]
 
 
