@@ -121,6 +121,20 @@ async def fetch_names(session, chat_id):
   return [(await session.resolve_peer_record(user)).alias for user in members if not user.is_self]
 
 
+def format_multiline_msg(text, rem_lines):
+  for number, line in enumerate(text.split('\n')):
+    if number:
+      line = f'|{line}'
+    while len(line.encode()) > rem_lines:
+      head = line.encode()[:rem_lines - 1].decode(errors='ignore')
+      space = head.rfind(' ')
+      if space > 0:
+        head = head[:space]
+      yield f'{head}^'
+      line = '^' + line[len(head):].removeprefix(' ')
+    yield line
+
+
 def iter_text_lines(words, limit):
   line = ''
   for word in words:

@@ -17,7 +17,8 @@ from twisted.words.protocols import irc as irc_protocol
 import config, irc_commands, irc_message
 from irc_helpers import (
   RECENT_MESSAGES, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
-  irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward, render_reply)
+  format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
+  render_reply)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -35,6 +36,7 @@ class IRCConnection(LineOnlyReceiver):
     self.caps = set()
     self.channels = set()
     self.pending_choices = None
+    self.compose = {}
 
   def connectionLost(self, reason):
     if self.factory.active is self:
@@ -123,11 +125,12 @@ class IRCConnection(LineOnlyReceiver):
     self.channels.discard(channel.lower())
     self.send('PART', channel, prefix=self.hostmask)
 
-  def relay(self, prefix, target, lines, date):
+  def relay(self, prefix, target, text, date):
     tags = None
     if 'server-time' in self.caps:
       tags = {'time': date.strftime('%Y-%m-%dT%H:%M:%S.000Z')}
-    for line in lines:
+    rem_lines = 510 - len(f':{prefix} PRIVMSG {target} :'.encode())
+    for line in format_multiline_msg(text, rem_lines):
       self.send('PRIVMSG', target, line, prefix=prefix, tags=tags)
 
   # #################### IRC commands
@@ -213,7 +216,19 @@ class IRCConnection(LineOnlyReceiver):
         self.reply(irc_protocol.ERR_NOSUCHNICK, target, 'No such nick/channel')
         return
     if 'echo-message' in self.caps:
-      self.relay(self.hostmask, target, [text], datetime.now(timezone.utc))
+      self.relay(self.hostmask, target, text, datetime.now(timezone.utc))
+
+    composed = self.compose.pop(target.lower(), '')
+    if text.endswith(('^', '|')):
+      composed += text[:-1] + (' ' if text.endswith('^') else '\n')
+      self.compose[target.lower()] = composed
+      buffered = composed[:-1]
+      irc_commands.notice(
+        self, peer, f'{len(buffered)} chars, {buffered.count("\n") + 1} lines buffered')
+      return
+    if composed:
+      text = composed[:-1] if text == '.' else composed + text
+
     is_choice = irc_commands.CHOICE.fullmatch(text.removeprefix(irc_commands.PREFIX))
     if self.pending_choices and not is_choice:
       irc_commands.notice(self, self.pending_choices[0], 'Reply choices dropped')
@@ -271,14 +286,12 @@ class TelegramIRCFactory(ServerFactory):
     connection = self.active
     if not connection:
       return
-    lines = text.split('\n')
     if not event.out:
-      connection.relay(peer_hostmask(peer), connection.nick, lines, event.date)
+      connection.relay(peer_hostmask(peer), connection.nick, text, event.date)
     elif 'echo-message' in connection.caps:
-      connection.relay(connection.hostmask, peer.alias, lines, event.date)
+      connection.relay(connection.hostmask, peer.alias, text, event.date)
     else:
-      connection.relay(
-        peer_hostmask(peer), connection.nick, [f'*me: {line}' for line in lines], event.date)
+      connection.relay(peer_hostmask(peer), connection.nick, f'*me: {text}', event.date)
 
   async def on_chat_message(self, event):
     chat = await self.session.resolve_peer_record(event.chat_id)
@@ -291,4 +304,4 @@ class TelegramIRCFactory(ServerFactory):
     if channel.lower() not in connection.channels:
       await connection.join_chat(chat)
     prefix = connection.hostmask if event.out else peer_hostmask(sender)
-    connection.relay(prefix, channel, text.split('\n'), event.date)
+    connection.relay(prefix, channel, text, event.date)
