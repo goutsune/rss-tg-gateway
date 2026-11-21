@@ -19,7 +19,7 @@ from models import PeerKind
 from irc_helpers import (
   RECENT_MESSAGES, Autojoin, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
   format_edit, format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
-  render_media, render_reply)
+  render_link_preview, render_media, render_reply)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -202,6 +202,24 @@ class IRCConnection(LineOnlyReceiver):
   def irc_WHO(self, mask='*', *_):
     self.reply(irc_protocol.RPL_ENDOFWHO, mask, 'End of WHO')
 
+  async def irc_WHOIS(self, *targets):
+    nick = targets[-1]
+    peer = await find_peer(nick)
+    if not peer or peer.kind != PeerKind.USER:
+      self.reply(irc_protocol.ERR_NOSUCHNICK, nick, 'No such nick')
+      self.reply(irc_protocol.RPL_ENDOFWHOIS, nick, 'End of WHOIS')
+      return
+
+    name = ' '.join(filter(None, (peer.first_name, peer.last_name)))
+    username = f'@{peer.username}' if peer.username else 'no username'
+    self.reply(irc_protocol.RPL_WHOISUSER, peer.alias, peer.entity_id, SERVER, '*', name)
+    self.reply(irc_protocol.RPL_WHOISSERVER, peer.alias, SERVER, username)
+    if seen := self.factory.last_seen.get(peer.id):
+      idle = int((datetime.now(timezone.utc) - seen).total_seconds())
+      self.reply(irc_protocol.RPL_WHOISIDLE, peer.alias, idle, int(seen.timestamp()),
+                 'seconds idle, signon time')
+    self.reply(irc_protocol.RPL_ENDOFWHOIS, peer.alias, 'End of WHOIS')
+
   def irc_PART(self, channel, *_):
     self.parted.add(channel.lower())
     self.part(channel)
@@ -278,6 +296,7 @@ class TelegramIRCFactory(ServerFactory):
     self.topics = {}
     self.recent = defaultdict(partial(deque, maxlen=RECENT_MESSAGES))
     self.autojoin = Autojoin.MENTIONS
+    self.last_seen = {}
     session.client.add_event_handler(
       self.on_private_message, events.NewMessage(func=lambda e: e.is_private))
     session.client.add_event_handler(
@@ -300,8 +319,10 @@ class TelegramIRCFactory(ServerFactory):
     recent = self.recent[chat.id]
     text = await incoming_mentions(self.session, message)
     rendered = render_media(message, await render_forward(self.session, message, text))
-    rendered = await render_reply(message, recent, rendered)
+    rendered = await render_reply(message, recent, render_link_preview(message, rendered))
     recent.append(RecentMessage(message.id, sender and sender.id, text))
+    if sender:
+      self.last_seen[sender.id] = message.date
     return rendered
 
   # #################### Telegram events

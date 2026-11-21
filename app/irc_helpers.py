@@ -21,6 +21,7 @@ LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
 RECENT_MESSAGES = 200
 QUOTE_LENGTH = 30
 EDIT_LENGTH = 20
+PREVIEW_LENGTH = 100
 
 RecentMessage = namedtuple('RecentMessage', 'id sender_id text')
 
@@ -108,6 +109,18 @@ def render_media(message, text):
   if message.sticker:
     link += f' {message.file.emoji}'
   return f'{text} {link}' if text else link
+
+
+def render_link_preview(message, text):
+  preview = message.web_preview
+  if not preview:
+    return text
+  description = ' '.join((preview.description or preview.title or '').split())
+  if not description:
+    return text
+  if len(description) > PREVIEW_LENGTH:
+    description = description[:PREVIEW_LENGTH] + '…'
+  return f'{text}\n[{description}]'
 
 
 async def render_forward(session, message, text):
