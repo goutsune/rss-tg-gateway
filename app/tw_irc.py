@@ -17,7 +17,7 @@ from twisted.words.protocols import irc as irc_protocol
 import config, irc_commands, irc_message
 from irc_helpers import (
   RECENT_MESSAGES, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
-  irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_reply)
+  irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward, render_reply)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -34,6 +34,7 @@ class IRCConnection(LineOnlyReceiver):
     self.negotiating = False
     self.caps = set()
     self.channels = set()
+    self.pending_choices = None
 
   def connectionLost(self, reason):
     if self.factory.active is self:
@@ -213,15 +214,22 @@ class IRCConnection(LineOnlyReceiver):
         return
     if 'echo-message' in self.caps:
       self.relay(self.hostmask, target, [text], datetime.now(timezone.utc))
+    is_choice = irc_commands.CHOICE.fullmatch(text.removeprefix(irc_commands.PREFIX))
+    if self.pending_choices and not is_choice:
+      irc_commands.notice(self, self.pending_choices[0], 'Reply choices dropped')
+      self.pending_choices = None
 
     prefix = irc_commands.PREFIX
     if not peer or text.startswith(prefix) and not text.startswith(prefix * 2):
       await irc_commands.run(self, peer, text.removeprefix(prefix))
       return
+    await self.send_to_telegram(peer, text.removeprefix(prefix))
+
+  async def send_to_telegram(self, peer, text, reply_to=None):
     client = self.factory.session.client
-    text, entities = await outgoing_mention(client, text.removeprefix(prefix))
+    text, entities = await outgoing_mention(client, text)
     message = await client.send_message(
-      peer.id, text, parse_mode=None, formatting_entities=entities)
+      peer.id, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
     self.factory.recent[peer.id].append(RecentMessage(message.id, message.sender_id, text))
     await client.send_read_acknowledge(peer.id)
 
@@ -252,7 +260,7 @@ class TelegramIRCFactory(ServerFactory):
   async def render_message(self, message):
     recent = self.recent[message.chat_id]
     text = await incoming_mentions(self.session, message)
-    rendered = await render_reply(message, recent, text)
+    rendered = await render_reply(message, recent, await render_forward(message, text))
     recent.append(RecentMessage(message.id, message.sender_id, text))
     return rendered
 

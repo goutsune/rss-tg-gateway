@@ -1,6 +1,7 @@
 import re
 from collections import namedtuple
 
+from slugify import slugify
 from telethon import helpers, utils
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest
@@ -73,6 +74,19 @@ async def incoming_mentions(session, message):
     if peer:
       text = text[:entity.offset] + peer.alias + text[entity.offset + entity.length:]
   return helpers.del_surrogate(text)
+
+
+async def render_forward(message, text):
+  forward = message.forward
+  if not forward:
+    return text
+  peer = forward.from_id and await Peer.get_or_none(id=utils.get_peer_id(forward.from_id))
+  if peer:
+    name = peer.alias
+  else:
+    entity = forward.sender or forward.chat
+    name = slugify(utils.get_display_name(entity) if entity else forward.from_name, separator='_')
+  return f'(F: {name}) {text}'
 
 
 async def render_reply(message, recent, text):
