@@ -9,10 +9,6 @@ def peer_hostmask(peer):
   return f'{peer.alias}!{peer.id}@{SERVER}'
 
 
-def render_lines(message):
-  return message.raw_text.split('\n')
-
-
 async def fetch_topic(client, chat_id):
   chat = await client.get_input_entity(chat_id)
   if isinstance(chat, InputPeerChannel):
