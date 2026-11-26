@@ -140,13 +140,16 @@ class IRCConnection(LineOnlyReceiver):
     self.channels.discard(channel.lower())
     self.send('PART', channel, prefix=self.hostmask)
 
-  def relay(self, prefix, target, text, date):
+  def relay(self, prefix, target, text, date, action=False):
     tags = None
     if 'server-time' in self.caps:
       tags = {'time': date.strftime('%Y-%m-%dT%H:%M:%S.000Z')}
     rem_lines = 510 - len(f':{prefix} PRIVMSG {target} :'.encode())
+    if action:
+      rem_lines -= len('\x01ACTION \x01')
     for line in format_multiline_msg(text, rem_lines):
-      self.send('PRIVMSG', target, line, prefix=prefix, tags=tags)
+      self.send('PRIVMSG', target, f'\x01ACTION {line}\x01' if action else line,
+                prefix=prefix, tags=tags)
 
   def relay_message(self, peer, sender, text, date):
     ''' Relay a Telegram message into its query or channel; sender is None for own messages,
@@ -173,6 +176,11 @@ class IRCConnection(LineOnlyReceiver):
     else:
       self.send('JOIN', irc_name(peer), prefix=peer_hostmask(member))
     members[member.id] = (member, date)
+
+  def mark_absent(self, peer, member):
+    _, members = self.present.setdefault(peer.id, (peer, {}))
+    if members.pop(member.id, None):
+      self.send('PART', irc_name(peer), prefix=peer_hostmask(member))
 
   def part_idle(self):
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.irc_presence_timeout)
@@ -358,6 +366,8 @@ class TelegramIRCFactory(ServerFactory):
     session.client.add_event_handler(
       self.on_edit,
       events.MessageEdited(incoming=True, func=lambda e: e.is_private or e.is_group))
+    session.client.add_event_handler(
+      self.on_chat_action, events.ChatAction(func=lambda e: e.is_group))
 
   def attach(self, connection):
     if self.active:
@@ -381,7 +391,9 @@ class TelegramIRCFactory(ServerFactory):
     recent = self.recent[peer.id]
     text = await incoming_mentions(self.session, message)
     rendered = render_media(message, await render_forward(self.session, message, text))
-    rendered = await render_reply(message, recent, render_link_preview(message, rendered))
+    own_nick = self.active.nick if self.active else None
+    rendered = await render_reply(
+      self.session, message, recent, render_link_preview(message, rendered), own_nick)
     recent.append(RecentMessage(message.id, sender and sender.id, text, message.date))
     if sender:
       self.last_seen[sender.id] = max(message.date, self.last_seen.get(sender.id, message.date))
@@ -432,3 +444,26 @@ class TelegramIRCFactory(ServerFactory):
       return
     for line in format_edit(old, text):
       connection.relay(peer_hostmask(sender), target, line, event.message.edit_date)
+
+  async def on_chat_action(self, event):
+    if event.action_message:
+      peer = await self.session.resolve_message_peer_record(event.action_message)
+    else:
+      peer = await self.session.resolve_peer_record(event.chat_id)
+    connection = self.active
+    if not connection or irc_name(peer).lower() not in connection.channels:
+      return
+
+    if event.new_pin:
+      pinned = await event.get_pinned_message()
+      pinner = await self.session.resolve_peer_record(event.action_message.from_id)
+      body = ' '.join(render_media(pinned, pinned.message or '').split())
+      connection.relay(peer_hostmask(pinner), irc_name(peer), f'Pinned: {body}',
+                       event.action_message.date, action=True)
+      return
+    for user in await event.get_users():
+      member = await self.session.resolve_peer_record(user)
+      if event.user_joined or event.user_added:
+        connection.mark_present(peer, member, datetime.now(timezone.utc))
+      elif event.user_left or event.user_kicked:
+        connection.mark_absent(peer, member)
