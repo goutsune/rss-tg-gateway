@@ -136,7 +136,7 @@ async def render_forward(session, message, text):
 
 async def render_reply(session, message, recent, text, own_nick):
   ''' alias: text for replies to one of the last irc_near_reply_distance messages or to the
-  author's latest one, alias: > quote | text for explicit quotes, > quote | text otherwise
+  author's latest one, alias: > quote | text otherwise
   '''
   reply_to = message.reply_to
   if isinstance(reply_to, MessageReplyStoryHeader):
@@ -172,10 +172,10 @@ async def render_reply(session, message, recent, text, own_nick):
     return f'{author}: {text}'
   quote = ' '.join(quote.split())
   if index is None and any(c.isalnum() for c in quote):
-    return f'> {quote} | {text}'
+    return f'{author}: > {quote} | {text}'
   quote = truncate_on_word(quote or f'[{to_alpha(message.reply_to_msg_id)}]',
                            config.irc_quote_length)
-  return f'> {quote} | {text}'
+  return f'{author}: > {quote} | {text}'
 
 
 def format_multiline_msg(text, rem_lines):
