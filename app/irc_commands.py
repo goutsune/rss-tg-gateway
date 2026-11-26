@@ -44,6 +44,7 @@ HELP = [
   '  alias: text replies to something alias just said',
   '  alias: > quote | text replies to an older message of alias, or quotes part of one',
   '  * alias Pinned: text means alias pinned that message',
+  '  +alias wrote in the channel recently, @alias is a chat admin',
   '  > <caption> | text is a reply to a story',
   '  (F: name) text was forwarded from name',
   '  *me: text in a private chat is something you sent from another Telegram app',

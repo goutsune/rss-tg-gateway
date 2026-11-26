@@ -6,8 +6,11 @@ from datetime import datetime, timedelta, timezone
 from functools import partial
 
 from telethon import events
+from telethon.errors import RPCError
 from telethon.tl.functions.channels import GetFullChannelRequest
 from telethon.tl.functions.messages import GetFullChatRequest, ReadDiscussionRequest
+from telethon.tl.types import (
+  ChannelParticipantAdmin, ChannelParticipantCreator, ChatParticipantAdmin, ChatParticipantCreator)
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
 from twisted.internet.task import LoopingCall
@@ -22,6 +25,9 @@ from irc_helpers import (
   incoming_mentions, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
   render_link_preview, render_media, render_reply)
 from models import Peer, PeerKind
+
+ADMIN_PARTICIPANTS = (
+  ChannelParticipantAdmin, ChannelParticipantCreator, ChatParticipantAdmin, ChatParticipantCreator)
 
 
 class IRCConnection(LineOnlyReceiver):
@@ -41,8 +47,8 @@ class IRCConnection(LineOnlyReceiver):
     self.pending_choices = None
     self.compose = {}
     self.parted = set()
-    self.present = {}
-    self.idle_sweep = LoopingCall(self.part_idle)
+    self.members = {}
+    self.idle_sweep = LoopingCall(self.devoice_idle)
     self.idle_sweep.start(config.irc_presence_check_interval, now=False)
 
   def connectionLost(self, reason):
@@ -108,8 +114,8 @@ class IRCConnection(LineOnlyReceiver):
     self.registered = True
     self.factory.attach(self)
     self.reply(irc_protocol.RPL_WELCOME, self.hostmask)
-    self.reply(irc_protocol.RPL_ISUPPORT,
-               'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
+    self.reply(irc_protocol.RPL_ISUPPORT, 'CASEMAPPING=ascii', 'CHANTYPES=#', 'PREFIX=(ov)@+',
+               'NETWORK=Telegram', 'are supported')
     self.reply(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
   async def join_chat(self, peer):
@@ -120,18 +126,36 @@ class IRCConnection(LineOnlyReceiver):
     else:
       chat = peer
       topic = await self.factory.chat_topic(chat)
-    # Present are those who wrote here within the presence timeout, as far as the buffer knows
+    session = self.factory.session
+    members, admins = {}, set()
+    try:
+      participants = await session.client.get_participants(chat.telegram_peer)
+    except RPCError as e:
+      self.send('NOTICE', self.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
+      participants = []
+    for user in participants:
+      if user.is_self:
+        continue
+      member = await session.resolve_peer_record(user)
+      members[member.id] = member
+      if isinstance(user.participant, ADMIN_PARTICIPANTS):
+        admins.add(member.id)
+
+    # Voiced are those who wrote here within the presence timeout, as far as the buffer knows
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.irc_presence_timeout)
     last_active = {m.sender_id: m.date for m in self.factory.recent[peer.id]
                    if m.sender_id and m.date > cutoff}
-    members = await Peer.filter(id__in=list(last_active))
-    self.present[peer.id] = (peer, {m.id: (m, last_active[m.id]) for m in members})
+    for member in await Peer.filter(id__in=[i for i in last_active if i not in members]):
+      members[member.id] = member
+    self.members[peer.id] = (channel, {i: (m, last_active.get(i)) for i, m in members.items()})
 
     self.channels.add(channel.lower())
     self.send('JOIN', channel, prefix=self.hostmask)
     if topic:
       self.reply(irc_protocol.RPL_TOPIC, channel, topic)
-    names = [self.nick, *(member.alias for member in members)]
+    names = [self.nick] + [
+      ('@' if i in admins else '+' if i in last_active else '') + member.alias
+      for i, member in members.items()]
     for names_line in iter_text_lines(names, 400):
       self.reply(irc_protocol.RPL_NAMREPLY, '=', channel, names_line)
     self.reply(irc_protocol.RPL_ENDOFNAMES, channel, 'End of NAMES')
@@ -157,7 +181,7 @@ class IRCConnection(LineOnlyReceiver):
     '''
     if peer.kind != PeerKind.USER:
       if sender:
-        self.mark_present(peer, sender, date)
+        self.mark_active(peer, sender, date)
       prefix = peer_hostmask(sender) if sender else self.hostmask
       self.relay(prefix, irc_name(peer), text, date)
     elif sender:
@@ -167,30 +191,36 @@ class IRCConnection(LineOnlyReceiver):
     else:
       self.relay(peer_hostmask(peer), self.nick, f'*me: {text}', date)
 
-  def mark_present(self, peer, member, date):
+  def add_member(self, peer, member):
+    channel, members = self.members[peer.id]
+    if member.id not in members:
+      members[member.id] = (member, None)
+      self.send('JOIN', channel, prefix=peer_hostmask(member))
+
+  def remove_member(self, peer, member):
+    channel, members = self.members[peer.id]
+    if members.pop(member.id, None):
+      self.send('PART', channel, prefix=peer_hostmask(member))
+
+  def mark_active(self, peer, member, date):
     if (datetime.now(timezone.utc) - date).total_seconds() > config.irc_presence_timeout:
       return
-    _, members = self.present.setdefault(peer.id, (peer, {}))
-    if member.id in members:
-      date = max(date, members[member.id][1])
-    else:
-      self.send('JOIN', irc_name(peer), prefix=peer_hostmask(member))
-    members[member.id] = (member, date)
+    self.add_member(peer, member)
+    channel, members = self.members[peer.id]
+    last_active = members[member.id][1]
+    if not last_active:
+      self.send('MODE', channel, '+v', member.alias, prefix=SERVER)
+    members[member.id] = (member, max(date, last_active or date))
 
-  def mark_absent(self, peer, member):
-    _, members = self.present.setdefault(peer.id, (peer, {}))
-    if members.pop(member.id, None):
-      self.send('PART', irc_name(peer), prefix=peer_hostmask(member))
-
-  def part_idle(self):
+  def devoice_idle(self):
     cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.irc_presence_timeout)
-    for peer, members in self.present.values():
-      channel = irc_name(peer)
-      for member_id, (member, last_active) in list(members.items()):
-        if last_active < cutoff:
-          del members[member_id]
-          if channel.lower() in self.channels:
-            self.send('PART', channel, prefix=peer_hostmask(member))
+    for channel, members in self.members.values():
+      if channel.lower() not in self.channels:
+        continue
+      for member_id, (member, last_active) in members.items():
+        if last_active and last_active < cutoff:
+          members[member_id] = (member, None)
+          self.send('MODE', channel, '-v', member.alias, prefix=SERVER)
 
   # #################### IRC commands
   def irc_CAP(self, subcommand, *args):
@@ -237,8 +267,6 @@ class IRCConnection(LineOnlyReceiver):
     self.error('Quit')
 
   def irc_MODE(self, target, *modes):
-    # Stub: no modes exist. Channel answers exist only because irssi queries `MODE #chan` and
-    # the ban list `MODE #chan b` on join, and keeps the channel unsynced until 324 and 368 arrive
     if target.startswith('#'):
       if modes and 'b' in modes[0]:
         self.reply(irc_protocol.RPL_ENDOFBANLIST, target, 'End of ban list')
@@ -437,14 +465,13 @@ class TelegramIRCFactory(ServerFactory):
     if not connection:
       return
     if peer.kind == PeerKind.USER:
-      sender, target = peer, connection.nick
+      sender = peer
     elif irc_name(peer).lower() in connection.channels:
       sender = await self.session.resolve_peer_record(event.message.from_id)
-      target = irc_name(peer)
     else:
       return
     for line in format_edit(old, text):
-      connection.relay(peer_hostmask(sender), target, line, event.message.edit_date)
+      connection.relay_message(peer, sender, line, event.message.edit_date)
 
   async def on_chat_action(self, event):
     if event.action_message:
@@ -465,6 +492,6 @@ class TelegramIRCFactory(ServerFactory):
     for user in await event.get_users():
       member = await self.session.resolve_peer_record(user)
       if event.user_joined or event.user_added:
-        connection.mark_present(peer, member, datetime.now(timezone.utc))
+        connection.add_member(peer, member)
       elif event.user_left or event.user_kicked:
-        connection.mark_absent(peer, member)
+        connection.remove_member(peer, member)

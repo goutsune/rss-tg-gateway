@@ -29,6 +29,6 @@ irc_cut_threshold = 10
 # Longest changed part shown as %s/old/new/ before the whole line is shown instead
 irc_edit_length = 20
 
-# Seconds without a message before someone is PARTed from a chat channel, and how often to check
+# Seconds without a message before someone loses voice in a chat channel, and how often to check
 irc_presence_timeout = 3600
 irc_presence_check_interval = 60
