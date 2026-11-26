@@ -19,6 +19,8 @@ irc_forum_list_limit = 100
 
 # Messages per conversation kept for replies, edits and ,R/,r
 irc_recent_messages = 200
+# Replies to one of this many latest messages, or to the author's latest one, show as alias: text
+irc_near_reply_distance = 5
 # Characters of a quoted message in a reply, of a link preview description
 irc_quote_length = 30
 irc_link_preview_length = 100
