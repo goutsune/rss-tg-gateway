@@ -134,7 +134,10 @@ async def render_forward(session, message, text):
   return f'(F: {name}) {text}'
 
 
-async def render_reply(message, recent, text):
+async def render_reply(session, message, recent, text, own_nick):
+  ''' alias: text for replies to one of the last irc_near_reply_distance messages or to the
+  author's latest one, alias: > quote | text for explicit quotes, > quote | text otherwise
+  '''
   reply_to = message.reply_to
   if isinstance(reply_to, MessageReplyStoryHeader):
     result = await message.client(GetStoriesByIDRequest(reply_to.peer, [reply_to.story_id]))
@@ -142,22 +145,36 @@ async def render_reply(message, recent, text):
     return '> <{}> | {}'.format(' '.join(' '.join(captions).split()), text)
   if not message.reply_to_msg_id or reply_to.forum_topic and not reply_to.reply_to_top_id:
     return text
-  if reply_to.quote_text:
-    return '> {} | {}'.format(' '.join(reply_to.quote_text.split()), text)
 
-  replied = next((m for m in recent if m.id == message.reply_to_msg_id), None)
-  if replied:
-    quote = ' '.join(replied.text.split())
+  index = next((i for i, m in enumerate(recent) if m.id == message.reply_to_msg_id), None)
+  if index is not None:
+    replied = recent[index]
+    author = (await Peer.get(id=replied.sender_id)).alias if replied.sender_id else own_nick
+    quote = replied.text
+    later = list(recent)[index + 1:]
+    is_near = len(later) < config.irc_near_reply_distance or \
+      all(m.sender_id != replied.sender_id for m in later)
   else:
     replied_message = await message.get_reply_message()
     if not replied_message:
       return text
-    quote = ' '.join(replied_message.message.split())
-    if any(c.isalnum() for c in quote):
-      return f'> {quote} | {text}'
+    if replied_message.out:
+      author = own_nick
+    else:
+      sender = replied_message.from_id or replied_message.peer_id
+      author = (await session.resolve_peer_record(sender)).alias
+    quote = replied_message.message or ''
+    is_near = False
 
-  quote = quote or f'[{to_alpha(message.reply_to_msg_id)}]'
-  quote = truncate_on_word(quote, config.irc_quote_length)
+  if reply_to.quote_text:
+    return '{}: > {} | {}'.format(author, ' '.join(reply_to.quote_text.split()), text)
+  if is_near:
+    return f'{author}: {text}'
+  quote = ' '.join(quote.split())
+  if index is None and any(c.isalnum() for c in quote):
+    return f'> {quote} | {text}'
+  quote = truncate_on_word(quote or f'[{to_alpha(message.reply_to_msg_id)}]',
+                           config.irc_quote_length)
   return f'> {quote} | {text}'
 
 
