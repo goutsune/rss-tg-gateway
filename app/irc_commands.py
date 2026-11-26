@@ -39,16 +39,15 @@ HELP = [
   '  start with "foo: " to mention foo by name, "foo:: " keeps it as plain text',
   '',
   'Reading what comes in:',
-  '  |text is the same message continuing on a new line',
-  '  text^ and ^text are one long line cut in two',
-  '  > quote… | text is a reply to that quote',
-  '  > quote on its own line, then text, replies to an older message or quotes part of one',
+  '  | text is the same message continuing on a new line',
+  '  text^ and ^ text are one long line cut in two',
+  '  > quote | text is a reply to that quote',
   '  > <caption> | text is a reply to a story',
   '  (F: name) text was forwarded from name',
   '  *me: text in a private chat is something you sent from another Telegram app',
-  '  |[text] under a message with a link is what the linked page says about itself',
+  '  | [text] under a message with a link is what the linked page says about itself',
   '  %s/old/new/ means they edited old into new in their message',
-  '  % Edit: text is their edited line in full, %| Edit: text one changed line of a longer one',
+  '  % text is their edited line in full, %| text one changed line of a longer message',
 ]
 
 

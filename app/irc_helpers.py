@@ -144,7 +144,7 @@ async def render_reply(message, recent, text):
   if not message.reply_to_msg_id or reply_to.forum_topic and not reply_to.reply_to_top_id:
     return text
   if reply_to.quote_text:
-    return '> {}\n{}'.format(' '.join(reply_to.quote_text.split()), text)
+    return '> {} | {}'.format(' '.join(reply_to.quote_text.split()), text)
 
   replied = next((m for m in recent if m.id == message.reply_to_msg_id), None)
   if replied:
@@ -155,7 +155,7 @@ async def render_reply(message, recent, text):
       return text
     quote = ' '.join(replied_message.message.split())
     if any(c.isalnum() for c in quote):
-      return f'> {quote}\n{text}'
+      return f'> {quote} | {text}'
 
   quote = quote or f'[{to_alpha(message.reply_to_msg_id)}]'
   if len(quote) > QUOTE_LENGTH:
@@ -171,14 +171,14 @@ async def fetch_names(session, chat):
 def format_multiline_msg(text, rem_lines):
   for number, line in enumerate(text.split('\n')):
     if number:
-      line = f'|{line}'
+      line = f'| {line}'
     while len(line.encode()) > rem_lines:
       head = line.encode()[:rem_lines - 1].decode(errors='ignore')
       space = head.rfind(' ')
       if space > 0:
         head = head[:space]
       yield f'{head}^'
-      line = '^' + line[len(head):].removeprefix(' ')
+      line = '^ ' + line[len(head):].removeprefix(' ')
     yield line
 
 
@@ -199,18 +199,18 @@ def format_line_edit(old, new):
     before, after = ' '.join(old_words[i1:i2]), ' '.join(new_words[j1:j2])
     if max(len(before), len(after)) <= EDIT_LENGTH:
       return f'%s/{before}/{after}/'
-  return f'% Edit: {new}'
+  return f'% {new}'
 
 
 def format_edit(old, new):
   ''' Lines announcing an edit: one line changed -> format_line_edit, more lines changed or added
-  -> each of them as %| Edit:, unknown old text -> the whole new text. Removed lines are not shown
+  -> each of them as %| line, unknown old text -> the whole new text. Removed lines are not shown
   '''
   new_lines = new.split('\n')
   if old is None:
     if len(new_lines) == 1:
-      return [f'% Edit: {new}']
-    return [f'%| Edit: {line}' for line in new_lines]
+      return [f'% {new}']
+    return [f'%| {line}' for line in new_lines]
 
   old_lines = old.split('\n')
   changes = [op for op in SequenceMatcher(None, old_lines, new_lines).get_opcodes()
@@ -219,7 +219,7 @@ def format_edit(old, new):
     _, i1, i2, j1, j2 = changes[0]
     if i2 - i1 == 1 and j2 - j1 == 1:
       return [format_line_edit(old_lines[i1], new_lines[j1])]
-  return [f'%| Edit: {line}' for _, _, _, j1, j2 in changes for line in new_lines[j1:j2]]
+  return [f'%| {line}' for _, _, _, j1, j2 in changes for line in new_lines[j1:j2]]
 
 
 def iter_text_lines(words, limit):
