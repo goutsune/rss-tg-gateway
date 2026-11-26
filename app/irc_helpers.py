@@ -5,8 +5,6 @@ from enum import Enum
 
 from slugify import slugify
 from telethon import helpers, utils
-from telethon.tl.functions.channels import GetFullChannelRequest
-from telethon.tl.functions.messages import GetFullChatRequest
 from telethon.tl.functions.stories import GetStoriesByIDRequest
 from telethon.tl.types import (
   InputMessageEntityMentionName, MessageEntityMention, MessageEntityMentionName,
@@ -18,18 +16,29 @@ from util import to_alpha
 
 SERVER = 'telegram'
 LEADING_MENTION = re.compile(r'([^\s:]+)(::?) ')
-RECENT_MESSAGES = 200
-QUOTE_LENGTH = 30
-EDIT_LENGTH = 20
-PREVIEW_LENGTH = 100
 
-RecentMessage = namedtuple('RecentMessage', 'id sender_id text')
+RecentMessage = namedtuple('RecentMessage', 'id sender_id text date')
 
 
 class Autojoin(Enum):
   NEVER = 'never'
   MENTIONS = 'mentions'
   ON_EVENT = 'on_event'
+
+
+def truncate_on_word(text, limit):
+  ''' Cut text to limit with …, keeping the word that crosses limit when it ends within
+  irc_cut_threshold more characters, cutting before it otherwise
+  '''
+  if len(text) <= limit:
+    return text
+  word_end = text.find(' ', limit)
+  if word_end == -1:
+    word_end = len(text)
+  if word_end - limit <= config.irc_cut_threshold:
+    return text if word_end == len(text) else text[:word_end] + '…'
+  word_start = text.rfind(' ', 0, limit)
+  return text[:word_start if word_start > 0 else limit] + '…'
 
 
 def peer_hostmask(peer):
@@ -54,15 +63,6 @@ async def find_peer(name):
     return await forums.select_related('chat').get_or_none()
   return await Peer.get_or_none(
     alias__iexact=chat_alias, kind__in=(PeerKind.CHAT, PeerKind.CHANNEL))
-
-
-async def fetch_topic(client, chat):
-  if chat.kind == PeerKind.CHANNEL:
-    full = await client(GetFullChannelRequest(chat.telegram_peer))
-  else:
-    full = await client(GetFullChatRequest(chat.entity_id))
-  description = ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
-  return f'{chat.display_name} // {description}' if description else chat.display_name
 
 
 async def outgoing_mention(client, text):
@@ -118,8 +118,7 @@ def render_link_preview(message, text):
   description = ' '.join((preview.description or preview.title or '').split())
   if not description:
     return text
-  if len(description) > PREVIEW_LENGTH:
-    description = description[:PREVIEW_LENGTH] + '…'
+  description = truncate_on_word(description, config.irc_link_preview_length)
   return f'{text}\n[{description}]'
 
 
@@ -158,14 +157,8 @@ async def render_reply(message, recent, text):
       return f'> {quote} | {text}'
 
   quote = quote or f'[{to_alpha(message.reply_to_msg_id)}]'
-  if len(quote) > QUOTE_LENGTH:
-    quote = quote[:QUOTE_LENGTH] + '…'
+  quote = truncate_on_word(quote, config.irc_quote_length)
   return f'> {quote} | {text}'
-
-
-async def fetch_names(session, chat):
-  members = await session.client.get_participants(chat.telegram_peer)
-  return [(await session.resolve_peer_record(user)).alias for user in members if not user.is_self]
 
 
 def format_multiline_msg(text, rem_lines):
@@ -183,7 +176,7 @@ def format_multiline_msg(text, rem_lines):
 
 
 def format_line_edit(old, new):
-  ''' %s/old/new/ for one changed run of words up to EDIT_LENGTH, whole line otherwise. Pure
+  ''' %s/old/new/ for one changed run of words up to irc_edit_length, whole line otherwise. Pure
   inserts and deletes take the neighbouring word along, so the old part is never empty
   '''
   old_words, new_words = old.split(' '), new.split(' ')
@@ -197,7 +190,7 @@ def format_line_edit(old, new):
       else:
         i2, j2 = i2 + 1, j2 + 1
     before, after = ' '.join(old_words[i1:i2]), ' '.join(new_words[j1:j2])
-    if max(len(before), len(after)) <= EDIT_LENGTH:
+    if max(len(before), len(after)) <= config.irc_edit_length:
       return f'%s/{before}/{after}/'
   return f'% {new}'
 

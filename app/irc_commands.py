@@ -14,7 +14,7 @@ from models import Peer, PeerKind
 SERVICE = 'TelegramServ'
 SERVICE_HOSTMASK = f'{SERVICE}!service@{SERVER}'
 PREFIX = ','
-CHOICE = re.compile(r'R(\d+)')
+CHOICE = re.compile(r'[RО](\d+)')
 VALID_ALIAS = re.compile(r'[A-Za-z_\[\]\\^{}|][A-Za-z0-9_\-\[\]\\^{}|]*')
 
 HELP = [
@@ -26,14 +26,14 @@ HELP = [
   'autojoin [never|mentions|on_event]: show or set when a chat message joins you to its '
   'channel; mentions covers replies to you too, a parted channel waits for your JOIN',
   'idjoin <id>: join a chat by the id or t.me/c/ link copied from Telegram',
-  'R partial|body: reply to a recent message containing partial, R1, R2... pick a match',
-  'r [alias:] body: reply to the latest message of alias, of the peer in private chats',
+  'R or О partial|body: reply to a recent message containing partial, R1, R2... pick a match',
+  'r or о [alias:] body: reply to the latest message of alias, of the peer in private chats',
   'h [n]: messages here you have not read yet, or the last n',
   'forums [#chat]: forum channels of a chat, the current one by default',
   f'In a conversation {PREFIX}command runs a command, {PREFIX * 2}text sends {PREFIX}text',
   '',
   'Writing longer messages:',
-  '  end a line with ^ to keep typing, the next line continues after a space',
+  '  end a line with \\ to keep typing, the next line continues after a space',
   '  end a line with | to keep typing, the next line starts on a new line',
   '  type a lone . to send what you have, or just finish with a normal line',
   '  start with "foo: " to mention foo by name, "foo:: " keeps it as plain text',
@@ -98,13 +98,13 @@ async def cmd_alias(connection, context, rest):
     return
 
   # A chat's forum channels carry its alias too, they get rejoined along with it
-  conversations = [peer]
+  renamed = [peer]
   if peer.kind in (PeerKind.CHAT, PeerKind.CHANNEL):
     forums = await Peer.filter(kind=PeerKind.FORUM, chat=peer)
     for forum in forums:
       forum.chat = peer
-    conversations += forums
-  old_names = [irc_name(conversation) for conversation in conversations]
+    renamed += forums
+  old_names = [irc_name(renamed_peer) for renamed_peer in renamed]
   old_hostmask = peer_hostmask(peer)
   peer.alias = new
   await peer.save()
@@ -112,17 +112,17 @@ async def cmd_alias(connection, context, rest):
   is_user = peer.kind == PeerKind.USER
   if is_user:
     connection.send('NICK', new, prefix=old_hostmask)
-  for conversation, old_name in zip(conversations, old_names):
+  for renamed_peer, old_name in zip(renamed, old_names):
     if old_name.lower() in connection.channels:
       connection.part(old_name)
-      await connection.join_chat(conversation)
+      await connection.join_chat(renamed_peer)
   notice(connection, context if is_user else peer, f'{old_names[0]} is now {irc_name(peer)}')
 
 
 async def cmd_aliases(connection, context, rest):
-  text = rest.strip()
+  pattern = rest.strip()
   peers = await Peer.filter(
-    Q(alias__icontains=text) | Q(display_name__icontains=text)
+    Q(alias__icontains=pattern) | Q(display_name__icontains=pattern)
   ).select_related('chat').order_by('alias')
   for peer in peers:
     notice(connection, context, f'{irc_name(peer)} ({peer.kind.value}): {peer.display_name}')
@@ -190,8 +190,8 @@ async def cmd_idjoin(connection, context, rest):
   # Ids come copied from Telegram either marked (-100... channels, -... basic groups) or bare,
   # as clients and t.me/c/<id>/<msg> links show them. A bare id tries the channel form first
   # so a supergroup wins over a basic group with the same number
-  number = int(re.search(r'-?\d+', rest)[0])
-  candidates = [number] if number < 0 else [PeerChannel(number), PeerChat(number)]
+  chat_id = int(re.search(r'-?\d+', rest)[0])
+  candidates = [chat_id] if chat_id < 0 else [PeerChannel(chat_id), PeerChat(chat_id)]
 
   for candidate in candidates:
     try:
@@ -203,7 +203,7 @@ async def cmd_idjoin(connection, context, rest):
       if irc_name(chat).lower() not in connection.channels:
         await connection.join_chat(chat)
       return
-  notice(connection, context, f'No known chat with id {number}')
+  notice(connection, context, f'No known chat with id {chat_id}')
 
 
 async def cmd_forums(connection, context, rest):
@@ -251,13 +251,11 @@ async def cmd_history(connection, context, rest):
       sender = await connection.factory.session.resolve_peer_record(
         message.from_id or message.peer_id)
     text = await connection.factory.render_message(message, context, sender)
-
-    # Without server-time the date goes on the first line and wherever it changes
     if 'server-time' not in connection.caps:
-      local = message.date.astimezone()
-      stamp = '%H:%M:%S' if local.date() == last_date else '%Y-%m-%d %H:%M:%S'
-      last_date = local.date()
-      text = f'{local.strftime(stamp)} {text}'
+      local_date = message.date.astimezone()
+      time_format = '%H:%M:%S' if local_date.date() == last_date else '%Y-%m-%d %H:%M:%S'
+      last_date = local_date.date()
+      text = f'{local_date.strftime(time_format)} {text}'
     connection.relay_message(context, sender, text, message.date)
     shown += 1
 
@@ -280,6 +278,8 @@ COMMANDS = {
   'idjoin': cmd_idjoin,
   'R': cmd_reply_search,
   'r': cmd_reply_latest,
+  'О': cmd_reply_search,
+  'о': cmd_reply_latest,
   'h': cmd_history,
   'forums': cmd_forums,
 }

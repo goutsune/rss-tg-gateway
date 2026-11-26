@@ -12,14 +12,14 @@ import config
 from models import Peer, PeerKind
 
 
-async def create_aliased(base, taken, **fields):
-  ''' Create a Peer aliased base, or base2, base3... while the taken queryset already has that
+async def create_aliased(base, is_taken, **fields):
+  ''' Create a Peer aliased base, or base2, base3... while the is_taken queryset already has that
   alias in any case. A leading digit gets an underscore in front, IRC names can't start with one
   '''
   if base[:1].isdigit():
     base = f'_{base}'
   alias, suffix = base, 1
-  while await taken.filter(alias__iexact=alias).exists():
+  while await is_taken.filter(alias__iexact=alias).exists():
     suffix += 1
     alias = f'{base}{suffix}'
   return await Peer.create(alias=alias, **fields)
@@ -44,8 +44,8 @@ class TelegramSession:
   async def resolve_peer_record(self, peer, force=False):
     # Telethon hands over entities, Peer* objects or marked ids, resolve_id splits the latter
     entity_id, peer_type = utils.resolve_id(utils.get_peer_id(peer))
-    kind = {PeerUser: PeerKind.USER, PeerChat: PeerKind.CHAT, PeerChannel: PeerKind.CHANNEL}
-    key = dict(kind=kind[peer_type], entity_id=entity_id, forum_id=None)
+    kinds = {PeerUser: PeerKind.USER, PeerChat: PeerKind.CHAT, PeerChannel: PeerKind.CHANNEL}
+    key = dict(kind=kinds[peer_type], entity_id=entity_id, forum_id=None)
     record = await Peer.get_or_none(**key)
     if record and not force:
       return record
@@ -83,10 +83,11 @@ class TelegramSession:
     if username:
       base = username.lower()
     else:
-      base = slugify(display_name, max_length=20, separator='_') or f'i{entity_id}'
+      base = slugify(display_name, max_length=config.irc_alias_length, separator='_') \
+        or f'i{entity_id}'
     return await create_aliased(base, Peer.exclude(kind=PeerKind.FORUM), **key, **fields)
 
-  async def resolve_conversation_record(self, message):
+  async def resolve_message_peer_record(self, message):
     ''' Record of the chat a message went to, or of its forum. Forums other than General flag
     their messages, General ones stay with the chat itself
     '''
@@ -101,7 +102,8 @@ class TelegramSession:
   async def resolve_forums(self, chat):
     ''' Forum records of a chat; General (id 1) is the chat itself, deleted forums are gone '''
     result = await self.client(GetForumTopicsRequest(
-      chat.telegram_peer, offset_date=None, offset_id=0, offset_topic=0, limit=100))
+      chat.telegram_peer, offset_date=None, offset_id=0, offset_topic=0,
+      limit=config.irc_forum_list_limit))
     return [await self.resolve_forum_record(chat, forum.id, forum.title)
             for forum in result.topics
             if forum.id != 1 and not isinstance(forum, ForumTopicDeleted)]
@@ -114,10 +116,10 @@ class TelegramSession:
     if title is None:
       result = await self.client(GetForumTopicsByIDRequest(chat.telegram_peer, [forum_id]))
       title = result.topics[0].title
-    base = slugify(title, max_length=20, separator='_') or f'f{forum_id}'
-    taken = Peer.filter(kind=PeerKind.FORUM, entity_id=chat.entity_id)
+    base = slugify(title, max_length=config.irc_alias_length, separator='_') or f'f{forum_id}'
+    is_taken = Peer.filter(kind=PeerKind.FORUM, entity_id=chat.entity_id)
     return await create_aliased(
-      base, taken, **key, chat=chat, first_name=title, display_name=title)
+      base, is_taken, **key, chat=chat, first_name=title, display_name=title)
 
   async def startup(self):
     print("Connecting...")

@@ -2,30 +2,31 @@
 '''
 import asyncio, inspect
 from collections import defaultdict, deque
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from functools import partial
 
 from telethon import events
-from telethon.errors import RPCError
-from telethon.tl.functions.messages import ReadDiscussionRequest
+from telethon.tl.functions.channels import GetFullChannelRequest
+from telethon.tl.functions.messages import GetFullChatRequest, ReadDiscussionRequest
 from twisted.internet.defer import Deferred
 from twisted.internet.protocol import ServerFactory
+from twisted.internet.task import LoopingCall
 from twisted.protocols.basic import LineOnlyReceiver
 from twisted.python import log
 from twisted.python.failure import Failure
 from twisted.words.protocols import irc as irc_protocol
 
 import config, irc_commands, irc_message
-from models import PeerKind
 from irc_helpers import (
-  RECENT_MESSAGES, Autojoin, SERVER, RecentMessage, fetch_names, fetch_topic, find_peer, incoming_mentions,
-  format_edit, format_multiline_msg, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
+  SERVER, Autojoin, RecentMessage, find_peer, format_edit, format_multiline_msg,
+  incoming_mentions, irc_name, iter_text_lines, outgoing_mention, peer_hostmask, render_forward,
   render_link_preview, render_media, render_reply)
+from models import Peer, PeerKind
 
 
 class IRCConnection(LineOnlyReceiver):
   delimiter = b'\n'
-  MAX_LENGTH = 8192
+  MAX_LENGTH = config.irc_max_line_length
   CAPABILITIES = ('echo-message', 'server-time')
 
   # #################### LineOnlyReceiver / Protocol overrides
@@ -40,8 +41,12 @@ class IRCConnection(LineOnlyReceiver):
     self.pending_choices = None
     self.compose = {}
     self.parted = set()
+    self.present = {}
+    self.idle_sweep = LoopingCall(self.part_idle)
+    self.idle_sweep.start(config.irc_presence_check_interval, now=False)
 
   def connectionLost(self, reason):
+    self.idle_sweep.stop()
     if self.factory.active is self:
       self.factory.active = None
 
@@ -107,25 +112,27 @@ class IRCConnection(LineOnlyReceiver):
                'CASEMAPPING=ascii', 'CHANTYPES=#', 'NETWORK=Telegram', 'are supported')
     self.reply(irc_protocol.ERR_NOMOTD, 'No MOTD')
 
-  async def join_chat(self, conversation):
-    channel = irc_name(conversation)
-    if conversation.kind == PeerKind.FORUM:
-      chat = conversation.chat
-      topic = f'{chat.display_name} // {conversation.display_name}'
+  async def join_chat(self, peer):
+    channel = irc_name(peer)
+    if peer.kind == PeerKind.FORUM:
+      chat = peer.chat
+      topic = f'{chat.display_name} // {peer.display_name}'
     else:
-      chat = conversation
+      chat = peer
       topic = await self.factory.chat_topic(chat)
-    try:
-      names = await fetch_names(self.factory.session, chat)
-    except RPCError as e:
-      self.send('NOTICE', self.nick, f'{channel} names failed: {e!r}', prefix=SERVER)
-      names = []
+    # Present are those who wrote here within the presence timeout, as far as the buffer knows
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.irc_presence_timeout)
+    last_active = {m.sender_id: m.date for m in self.factory.recent[peer.id]
+                   if m.sender_id and m.date > cutoff}
+    members = await Peer.filter(id__in=list(last_active))
+    self.present[peer.id] = (peer, {m.id: (m, last_active[m.id]) for m in members})
 
     self.channels.add(channel.lower())
     self.send('JOIN', channel, prefix=self.hostmask)
     if topic:
       self.reply(irc_protocol.RPL_TOPIC, channel, topic)
-    for names_line in iter_text_lines([self.nick, *names], 400):
+    names = [self.nick, *(member.alias for member in members)]
+    for names_line in iter_text_lines(names, 400):
       self.reply(irc_protocol.RPL_NAMREPLY, '=', channel, names_line)
     self.reply(irc_protocol.RPL_ENDOFNAMES, channel, 'End of NAMES')
 
@@ -141,19 +148,41 @@ class IRCConnection(LineOnlyReceiver):
     for line in format_multiline_msg(text, rem_lines):
       self.send('PRIVMSG', target, line, prefix=prefix, tags=tags)
 
-  def relay_message(self, conversation, sender, text, date):
+  def relay_message(self, peer, sender, text, date):
     ''' Relay a Telegram message into its query or channel; sender is None for own messages,
     which a query can only show with echo-message, otherwise as *me: from the peer
     '''
-    if conversation.kind != PeerKind.USER:
+    if peer.kind != PeerKind.USER:
+      if sender:
+        self.mark_present(peer, sender, date)
       prefix = peer_hostmask(sender) if sender else self.hostmask
-      self.relay(prefix, irc_name(conversation), text, date)
+      self.relay(prefix, irc_name(peer), text, date)
     elif sender:
       self.relay(peer_hostmask(sender), self.nick, text, date)
     elif 'echo-message' in self.caps:
-      self.relay(self.hostmask, conversation.alias, text, date)
+      self.relay(self.hostmask, peer.alias, text, date)
     else:
-      self.relay(peer_hostmask(conversation), self.nick, f'*me: {text}', date)
+      self.relay(peer_hostmask(peer), self.nick, f'*me: {text}', date)
+
+  def mark_present(self, peer, member, date):
+    if (datetime.now(timezone.utc) - date).total_seconds() > config.irc_presence_timeout:
+      return
+    _, members = self.present.setdefault(peer.id, (peer, {}))
+    if member.id in members:
+      date = max(date, members[member.id][1])
+    else:
+      self.send('JOIN', irc_name(peer), prefix=peer_hostmask(member))
+    members[member.id] = (member, date)
+
+  def part_idle(self):
+    cutoff = datetime.now(timezone.utc) - timedelta(seconds=config.irc_presence_timeout)
+    for peer, members in self.present.values():
+      channel = irc_name(peer)
+      for member_id, (member, last_active) in list(members.items()):
+        if last_active < cutoff:
+          del members[member_id]
+          if channel.lower() in self.channels:
+            self.send('PART', channel, prefix=peer_hostmask(member))
 
   # #################### IRC commands
   def irc_CAP(self, subcommand, *args):
@@ -275,8 +304,8 @@ class IRCConnection(LineOnlyReceiver):
       self.relay(self.hostmask, target, text, datetime.now(timezone.utc))
 
     composed = self.compose.pop(target.lower(), '')
-    if text.endswith(('^', '|')):
-      composed += text[:-1] + (' ' if text.endswith('^') else '\n')
+    if text.endswith(('\\', '|')):
+      composed += text[:-1] + (' ' if text.endswith('\\') else '\n')
       self.compose[target.lower()] = composed
       buffered = composed[:-1]
       irc_commands.notice(
@@ -301,14 +330,15 @@ class IRCConnection(LineOnlyReceiver):
       reply_to = peer.forum_id
     client = self.factory.session.client
     text, entities = await outgoing_mention(client, text)
+    telegram_peer = peer.telegram_peer
     message = await client.send_message(
-      peer.telegram_peer, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
-    self.factory.recent[peer.id].append(RecentMessage(message.id, None, text))
+      telegram_peer, text, parse_mode=None, formatting_entities=entities, reply_to=reply_to)
+    self.factory.recent[peer.id].append(RecentMessage(message.id, None, text, message.date))
     # Without max_id Telethon marks the whole chat read, every forum included
     if peer.kind == PeerKind.FORUM:
-      await client(ReadDiscussionRequest(peer.telegram_peer, peer.forum_id, message.id))
+      await client(ReadDiscussionRequest(telegram_peer, peer.forum_id, message.id))
     else:
-      await client.send_read_acknowledge(peer.telegram_peer, max_id=message.id)
+      await client.send_read_acknowledge(telegram_peer, max_id=message.id)
 
 
 class TelegramIRCFactory(ServerFactory):
@@ -318,7 +348,7 @@ class TelegramIRCFactory(ServerFactory):
     self.session = session
     self.active = None
     self.topics = {}
-    self.recent = defaultdict(partial(deque, maxlen=RECENT_MESSAGES))
+    self.recent = defaultdict(partial(deque, maxlen=config.irc_recent_messages))
     self.autojoin = Autojoin.MENTIONS
     self.last_seen = {}
     session.client.add_event_handler(
@@ -335,16 +365,24 @@ class TelegramIRCFactory(ServerFactory):
     self.active = connection
 
   async def chat_topic(self, chat):
-    if chat.id not in self.topics:
-      self.topics[chat.id] = await fetch_topic(self.session.client, chat)
+    if chat.id in self.topics:
+      return self.topics[chat.id]
+    client = self.session.client
+    if chat.kind == PeerKind.CHANNEL:
+      full = await client(GetFullChannelRequest(chat.telegram_peer))
+    else:
+      full = await client(GetFullChatRequest(chat.entity_id))
+    description = ' :: '.join(line for line in full.full_chat.about.splitlines() if line.strip())
+    self.topics[chat.id] = f'{chat.display_name} // {description}' if description \
+      else chat.display_name
     return self.topics[chat.id]
 
-  async def render_message(self, message, chat, sender):
-    recent = self.recent[chat.id]
+  async def render_message(self, message, peer, sender):
+    recent = self.recent[peer.id]
     text = await incoming_mentions(self.session, message)
     rendered = render_media(message, await render_forward(self.session, message, text))
     rendered = await render_reply(message, recent, render_link_preview(message, rendered))
-    recent.append(RecentMessage(message.id, sender and sender.id, text))
+    recent.append(RecentMessage(message.id, sender and sender.id, text, message.date))
     if sender:
       self.last_seen[sender.id] = max(message.date, self.last_seen.get(sender.id, message.date))
     return rendered
@@ -358,23 +396,23 @@ class TelegramIRCFactory(ServerFactory):
       self.active.relay_message(peer, sender, text, event.date)
 
   async def on_chat_message(self, event):
-    conversation = await self.session.resolve_conversation_record(event.message)
+    peer = await self.session.resolve_message_peer_record(event.message)
     sender = None if event.out else await self.session.resolve_peer_record(event.message.from_id)
-    text = await self.render_message(event.message, conversation, sender)
+    text = await self.render_message(event.message, peer, sender)
     connection = self.active
     if not connection:
       return
-    channel = irc_name(conversation)
+    channel = irc_name(peer)
     if channel.lower() not in connection.channels:
       if channel.lower() in connection.parted or self.autojoin == Autojoin.NEVER or \
           self.autojoin == Autojoin.MENTIONS and not event.mentioned:
         return
-      await connection.join_chat(conversation)
-    connection.relay_message(conversation, sender, text, event.date)
+      await connection.join_chat(peer)
+    connection.relay_message(peer, sender, text, event.date)
 
   async def on_edit(self, event):
-    conversation = await self.session.resolve_conversation_record(event.message)
-    recent = self.recent[conversation.id]
+    peer = await self.session.resolve_message_peer_record(event.message)
+    recent = self.recent[peer.id]
     index = next((i for i, m in enumerate(recent) if m.id == event.id), None)
     text = await incoming_mentions(self.session, event.message)
     old = None
@@ -385,11 +423,11 @@ class TelegramIRCFactory(ServerFactory):
     connection = self.active
     if not connection:
       return
-    target = irc_name(conversation)
-    if conversation.kind == PeerKind.USER:
-      sender, target = conversation, connection.nick
-    elif target.lower() in connection.channels:
+    if peer.kind == PeerKind.USER:
+      sender, target = peer, connection.nick
+    elif irc_name(peer).lower() in connection.channels:
       sender = await self.session.resolve_peer_record(event.message.from_id)
+      target = irc_name(peer)
     else:
       return
     for line in format_edit(old, text):

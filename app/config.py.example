@@ -5,6 +5,28 @@ user = 'foo'
 host = 'http://127.0.0.1:9504'
 bind = '127.0.0.1'
 web_port = 9504
+db_url = 'sqlite://cache.db'
+
 irc_port = 6667
 irc_password = 'XXXXXXXX'
-db_url = 'sqlite://cache.db'
+# Longest line accepted from the IRC client, in bytes
+irc_max_line_length = 8192
+
+# Characters of a name slug used for new aliases
+irc_alias_length = 20
+# Forums listed per chat by LIST and ,forums
+irc_forum_list_limit = 100
+
+# Messages per conversation kept for replies, edits and ,R/,r
+irc_recent_messages = 200
+# Characters of a quoted message in a reply, of a link preview description
+irc_quote_length = 30
+irc_link_preview_length = 100
+# How many characters a word may run past those lengths before being cut off
+irc_cut_threshold = 10
+# Longest changed part shown as %s/old/new/ before the whole line is shown instead
+irc_edit_length = 20
+
+# Seconds without a message before someone is PARTed from a chat channel, and how often to check
+irc_presence_timeout = 3600
+irc_presence_check_interval = 60
