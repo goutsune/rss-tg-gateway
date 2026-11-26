@@ -75,11 +75,13 @@ async def outgoing_mention(client, text):
   peer = await find_peer(match[1])
   if not peer:
     return text, None
+  if peer.username:
+    return f'@{peer.username},{rest}', None
 
   name = ' '.join(filter(None, (peer.first_name, peer.last_name)))
   user = utils.get_input_user(await client.get_input_entity(peer.telegram_peer))
   mention = InputMessageEntityMentionName(0, len(name.encode('utf-16-le')) // 2, user)
-  return f'{name}:{rest}', [mention]
+  return f'{name},{rest}', [mention]
 
 
 async def incoming_mentions(session, message):

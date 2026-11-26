@@ -36,7 +36,7 @@ HELP = [
   '  end a line with \\ to keep typing, the next line continues after a space',
   '  end a line with | to keep typing, the next line starts on a new line',
   '  type a lone . to send what you have, or just finish with a normal line',
-  '  start with "foo: " to mention foo by name, "foo:: " keeps it as plain text',
+  '  start with "foo: " to mention foo as "@foo, ", "foo:: " keeps it as plain text',
   '',
   'Reading what comes in:',
   '  | text is the same message continuing on a new line',
