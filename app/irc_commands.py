@@ -40,7 +40,7 @@ HELP = [
   '',
   'Reading what comes in:',
   '  | text is the same message continuing on a new line',
-  '  text^ and ^ text are one long line cut in two',
+  '  text\\ and \\ text are one long line cut in two',
   '  > quote | text is a reply to that quote',
   '  > <caption> | text is a reply to a story',
   '  (F: name) text was forwarded from name',

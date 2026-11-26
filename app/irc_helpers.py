@@ -170,8 +170,8 @@ def format_multiline_msg(text, rem_lines):
       space = head.rfind(' ')
       if space > 0:
         head = head[:space]
-      yield f'{head}^'
-      line = '^ ' + line[len(head):].removeprefix(' ')
+      yield f'{head}\\'
+      line = '\\ ' + line[len(head):].removeprefix(' ')
     yield line
 
 
