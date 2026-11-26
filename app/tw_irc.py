@@ -394,7 +394,8 @@ class TelegramIRCFactory(ServerFactory):
     own_nick = self.active.nick if self.active else None
     rendered = await render_reply(
       self.session, message, recent, render_link_preview(message, rendered), own_nick)
-    recent.append(RecentMessage(message.id, sender and sender.id, text, message.date))
+    if all(m.id != message.id for m in recent):
+      recent.append(RecentMessage(message.id, sender and sender.id, text, message.date))
     if sender:
       self.last_seen[sender.id] = max(message.date, self.last_seen.get(sender.id, message.date))
     return rendered

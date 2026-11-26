@@ -152,7 +152,7 @@ async def render_reply(session, message, recent, text, own_nick):
     replied = recent[index]
     author = (await Peer.get(id=replied.sender_id)).alias if replied.sender_id else own_nick
     quote = replied.text
-    later = list(recent)[index + 1:]
+    later = [m for m in recent if replied.id < m.id < message.id]
     is_near = len(later) < config.irc_near_reply_distance or \
       all(m.sender_id != replied.sender_id for m in later)
   else:

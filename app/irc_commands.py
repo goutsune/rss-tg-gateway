@@ -263,7 +263,7 @@ async def cmd_history(connection, context, rest):
 
   # History lands behind newer buffered messages, put the buffer back in message order
   recent = connection.factory.recent[context.id]
-  ordered = sorted({m.id: m for m in recent}.values(), key=lambda m: m.id)
+  ordered = sorted(recent, key=lambda m: m.id)
   recent.clear()
   recent.extend(ordered)
   if not shown:
