@@ -115,11 +115,12 @@ def render_link_preview(message, text):
   preview = message.web_preview
   if not preview:
     return text
-  description = ' '.join((preview.description or preview.title or '').split())
-  if not description:
+  parts = (' '.join(part.split()) for part in (preview.title, preview.description) if part)
+  rendered = ' :: '.join(part for part in parts if part)
+  if not rendered:
     return text
-  description = truncate_on_word(description, config.irc_link_preview_length)
-  return f'{text}\n[{description}]'
+  rendered = truncate_on_word(rendered, config.irc_link_preview_length)
+  return f'{text}\n[{rendered}]'
 
 
 async def render_forward(session, message, text):
